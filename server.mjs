@@ -1,3 +1,4 @@
+import {termsVersion} from './web/legal/terms.mjs';
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
@@ -34,7 +35,11 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     requireThat(u&&u.authVersion===session.authVersion&&(u.role==='worker')===(portal==='worker'),401,'Sign in again.');
     session.until=Date.now()+30*60000;return u;
   }
+  function hasAccepted(user) {
+    return !!db.prepare('SELECT 1 FROM terms_acceptances WHERE account_id=? AND version=?').get(user.id,termsVersion);
+  }
   function snapshot(user,s,extras={}){
+    if (!hasAccepted(user)) return {termsRequired:termsVersion,csrf:s.csrf};
     const {state,revision}=readBooks(db);
     return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,data:workerView(db,user,state)}:
       {user:publicUser(user),csrf:s.csrf,state:scoped(user,state),revision,...extras};
@@ -55,7 +60,11 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(!path.startsWith('/api/')){
           requireThat(req.method==='GET'||req.method==='HEAD',405,'Method unavailable.');
           let name=path==='/'?'index.html':path.slice(1),root='web/'+portal+'/';
-          if(path.startsWith('/shared/')){
+          if(path.startsWith('/legal/')){
+            name=path.slice(7);
+            requireThat(['terms.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');
+            root='web/legal/';
+          }else if(path.startsWith('/shared/')){
             name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png'].includes(name)),404,'File unavailable.');root='shared/';
           }else requireThat((portal==='main'?mainFiles:workerFiles).has(name),404,'File unavailable.');
           const bytes=await readFile(new URL('./'+root+name,import.meta.url));res.writeHead(200,{'Content-Type':mime[name.split('.').pop()]});res.end(req.method==='HEAD'?undefined:bytes);return;
@@ -82,6 +91,16 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(post)requireThat(req.headers['x-csrf-token']===s.csrf,403,'Reload before making changes.');
         if(path==='/api/session'&&!post){send(res,200,snapshot(u,s));return;}
         if(path==='/api/logout'&&post){sessions.delete(sid);setCookie('',0);send(res,200,{ok:true});return;}
+        if(path==='/api/terms' && post){
+          const body=await jsonBody(req,512);
+          requireThat(sessions.get(sid)===s,401,'Sign in again.');
+          const account=userFor(s,portal);
+          requireThat(body.version===termsVersion,409,'Terms changed. Reload to read the current version.');
+          db.prepare('INSERT INTO terms_acceptances(account_id,version,accepted_at) VALUES(?,?,?) ON CONFLICT(account_id,version) DO NOTHING')
+            .run(account.id,termsVersion,new Date().toISOString());
+          send(res,200,snapshot(account,s));return;
+        }
+        requireThat(hasAccepted(u),428,'Read and agree to the Terms of Service first.');
         if(portal==='worker'){
           requireThat(post&&path==='/api/worker/action',403,'Worker portal access only.');
           const p=await jsonBody(req,16384);requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);

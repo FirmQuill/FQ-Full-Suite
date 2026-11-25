@@ -36,6 +36,7 @@ test('worker and manager portals: mobile clock-in/out, two correction reviews, a
     async function login(page,url,username){
       await page.goto(url);const f=page.locator('form#login');await f.locator('[name=username]').fill(username);
       await f.locator('[name=password]').fill(password);await f.getByRole('button',{name:'Sign in'}).click();
+      await page.getByRole('button',{name:'I agree to the Terms of Service'}).click();
     }
     await login(worker,suite.workerUrl,'punchuser');
     await worker.getByRole('button',{name:'Clock in',exact:true}).click();
