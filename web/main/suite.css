@@ -1,0 +1,8 @@
+[hidden]{display:none!important}
+.shell aside{overflow-y:auto}
+.shell nav .navlabel{margin-top:1.15rem}
+.toolbar .toolgroup{flex-wrap:wrap}
+.transfer-summary{margin:1rem 0;padding:1rem 0;border-top:1px solid var(--line)}
+.transfer-summary p{margin:.55rem 0}
+.request-detail{white-space:pre-wrap;overflow-wrap:anywhere}
+@media(max-width:730px){.toolbar .toolgroup{gap:.3rem}.toolbar button{padding:.45rem .6rem}.toolbar .picker{max-width:35vw}.shell aside nav button{min-height:40px}}
