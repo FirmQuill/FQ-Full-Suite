@@ -1,3 +1,5 @@
+import {initializeAccess} from '../access.mjs';
+import {initializeDepartments} from '../departments.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
@@ -19,6 +21,7 @@ function fixture(t){
   const [employee,second,supervisor]=state.companies[0].employees.map(e=>e.id),otherEmployee=state.companies[1].employees[0].id;
   const owner={id:'owner',role:'owner',assignments:[],employeeId:''},hr={id:'hr',role:'hr',assignments:[company],employeeId:''},payroll={id:'payroll',role:'payroll',assignments:[company],employeeId:''},manager={id:'manager',role:'manager',assignments:[company],employeeId:''},unassigned={id:'unassigned',role:'manager',assignments:[company],employeeId:''},worker={id:'worker',role:'worker',assignments:[company],employeeId:employee},worker2={id:'worker2',role:'worker',assignments:[company],employeeId:second};
   for(const u of [owner,hr,payroll,manager,unassigned,worker,worker2])db.prepare('INSERT INTO accounts VALUES(?,?,?,?,?,?,?,?,?)').run(u.id,u.id,u.id,u.role,JSON.stringify(u.assignments),u.employeeId,1,'not-a-real-hash',1);
+  initializeAccess(db);initializeDepartments(db,state);
   const act=(user,action)=>recordsCommand(db,user,state,{companyId:company,employeeId:employee,...action});
   const view=(user=worker,query={})=>recordsView(db,user,state,query);
   const profile=(id=employee)=>employeeProfile(db,state,company,id);

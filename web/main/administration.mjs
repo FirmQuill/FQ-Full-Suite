@@ -142,7 +142,7 @@ function exportLite(ctx){
   formModal('Export encrypted snapshot',input('password','Snapshot password (12+ characters)','password','','autocomplete="new-password" minlength="12"')+input('confirm','Confirm snapshot password','password','','autocomplete="new-password" minlength="12"'),'Create snapshot',async v=>{
     check(v.password===v.confirm,'Passwords differ.');
     const result=await api('transfer/export',{password:v.password});
-    formModal('Encrypted snapshot ready',summaryTables(result.summary)+`<p class="small source">SHA-256 ${esc(result.digest)}</p>`,'Download snapshot',()=>{
+    formModal('Encrypted snapshot ready',summaryTables(result.summary)+(result.deskReport?.length?panel('Owner desk transfer review',table(['Company','Warnings','Excluded from Lite','Archived rows'],result.deskReport.map(r=>[esc(r.companyName),esc(r.warnings.join(' '))||'None',esc(JSON.stringify(r.excluded)),esc(JSON.stringify(r.archived))]))+'<p>Review this transfer scope before downloading. Use a whole-database backup for Full Suite personnel, accounts and permissions.</p>'):'')+`<p class="small source">SHA-256 ${esc(result.digest)}</p>`,'Download snapshot',()=>{
       download(result.envelope,'FirmQuill-owner-'+new Date().toISOString().slice(0,10)+'.firmquill','application/json');
       ctx.closeModal();ctx.toast('Encrypted snapshot downloaded.');
     });

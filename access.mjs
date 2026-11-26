@@ -59,6 +59,8 @@ export function projectErpState(db,user,state){
   const areas=accountAreas(db,user),has=(...names)=>names.some(n=>areas.includes(n));
   return {...state,groups:has('Reports')?state.groups:[],companies:state.companies.map(c=>{
     const out={...c};
+    // Imported single-owner desk details remain private until converted into scoped workspace records.
+    delete out.desk;
     if(!has('Directory','Sales','Purchasing','Accounting','Banking','Reports'))out.parties=[];
     else if(!has('Directory','Accounting','Banking','Reports'))out.parties=out.parties.filter(p=>has('Sales')&&p.kind==='Customer'||has('Purchasing')&&p.kind==='Vendor');
     if(!has('Directory','Sales','Purchasing','Warehouse','Assembly','Reports'))out.items=[];

@@ -1,6 +1,6 @@
 # Create the first administrator and sign in
 
-Article: first-admin · Installed version: 0.3.0-preview.1 · Scope: public initial setup only. Verified against host.mjs and server.mjs.
+Article: first-admin · Installed version: 0.4.0-preview.1 · Scope: public initial setup only. Verified against host.mjs and server.mjs.
 
 ## Prerequisites
 

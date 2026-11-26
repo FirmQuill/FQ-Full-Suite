@@ -1,0 +1,67 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,mkdir,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createRequire} from 'node:module';
+import {createSuite} from '../server.mjs';
+import {openStore,tx,passwordHash,putUser,saveBooks,readBooks} from '../store.mjs';
+import {newVault,apply,position,validateState} from '../shared/core.mjs';
+import {assetsCommand,assetsView} from '../assets-workspace.mjs';
+import {seedFixtureTerms,acceptFixtureBrowser} from './fixture-terms.mjs';
+
+test('actual Harborline asset and separate audit portals reconcile a count with independent authority and retained history',{skip:!process.env.FIRMQUILL_BROWSER_EXE},async t=>{
+  const {chromium}=createRequire(import.meta.url)(process.env.FIRMQUILL_PLAYWRIGHT||'playwright');
+  const root=await mkdtemp(join(tmpdir(),'fq-assets-browser-')),database=join(root,'suite.sqlite'),password='Fictional Harborline asset test 2026!';
+  let browser,suite,company,item,ownerId,auditorId,approverId;
+  const db=openStore(database);
+  try{
+    let state=newVault('Harborline Fictional Supply',['stock']);company=state.companies[0].id;
+    state=apply(state,company,{type:'item',name:'Harborline fictional brass fittings',kind:'Product',date:'2026-11-01'});item=state.companies[0].items[0].id;
+    state=apply(state,company,{type:'adjust in',item,qty:20,amount:20000,location:'Harbor A',date:'2026-11-01'});tx(db,()=>saveBooks(db,state));
+    const hash=await passwordHash(password);
+    ownerId=tx(db,()=>putUser(db,null,{name:'Harborline Owner',username:'harbor-owner',role:'owner',assignments:[]},hash,{bootstrap:true}));
+    const owner={id:ownerId,role:'owner',assignments:[]};
+    auditorId=tx(db,()=>putUser(db,owner,{name:'Harborline Count Auditor',username:'harbor-auditor',role:'viewer',assignments:[company],areas:[]},hash));
+    approverId=tx(db,()=>putUser(db,owner,{name:'Harborline Inventory Approver',username:'harbor-approver',role:'manager',assignments:[company],areas:[]},hash));
+    tx(db,()=>putUser(db,owner,{name:'Harborline Restricted Staff',username:'harbor-restricted',role:'viewer',assignments:[company],areas:[]},hash));
+    for(const [accountId,rights] of [[auditorId,['audit']],[approverId,['view','approve']]])tx(db,()=>assetsCommand(db,owner,state,{type:'grant',companyId:company,accountId,rights,requestId:crypto.randomUUID()}));
+    seedFixtureTerms(db);
+  }finally{db.close();}
+  try{
+    suite=await createSuite({database,mainPort:0,workerPort:0});
+    browser=await chromium.launch({executablePath:process.env.FIRMQUILL_BROWSER_EXE,headless:true});
+    const errors=[];
+    async function userPage(username,audit=false){const context=await browser.newContext({viewport:{width:1440,height:1050}}),page=await context.newPage();page.setDefaultTimeout(12000);page.on('pageerror',e=>errors.push(e.message));await page.goto(new URL(audit?'/audit':'/',suite.mainUrl).href);await page.locator('#login [name=username]').fill(username);await page.locator('#login [name=password]').fill(password);await page.locator('#login button').click();await acceptFixtureBrowser(page);await page.locator('.toolbar').waitFor();return page;}
+    const owner=await userPage('harbor-owner'),click=async(page,act,key)=>page.locator(`[data-act="${act}"]${key?`[data-key="${key}"]`:''}`).first().click(),modal=page=>page.locator('dialog[open]');
+    const submit=async page=>{await modal(page).locator('[type=submit]').click();await modal(page).waitFor({state:'hidden'});};
+    async function screenshot(page,name){if(process.env.FIRMQUILL_ASSET_SCREENSHOTS){await mkdir(process.env.FIRMQUILL_ASSET_SCREENSHOTS,{recursive:true});await page.screenshot({path:join(process.env.FIRMQUILL_ASSET_SCREENSHOTS,name+'.png'),fullPage:true});}}
+    async function api(page,path,action){return page.evaluate(async({path,action})=>{const session=await fetch('/api/session').then(r=>r.json());const response=await fetch('/api/'+path,{method:action?'POST':'GET',headers:action?{'Content-Type':'application/json','X-CSRF-Token':session.csrf}:{},body:action?JSON.stringify({action}):undefined});return {status:response.status,data:await response.json()};},{path,action});}
+    await click(owner,'nav','Assets & pallets');await owner.getByRole('heading',{name:'Tracked assets & pallets',exact:true}).waitFor();
+    await click(owner,'assets-register');let f=modal(owner);await f.locator('[name=identifier]').fill('HL-PALLET-001');await f.locator('[name=name]').fill('Harborline receiving pallet');await f.locator('[name=location]').fill('Harbor A');await f.locator('[name=date]').fill('2026-11-02');await f.locator(`[name="qty-${item}"]`).fill('10');await f.locator('[name=note]').fill('Fictional receiving check');await submit(owner);
+    await owner.getByRole('cell',{name:'HL-PALLET-001 · Harborline receiving pallet',exact:true}).waitFor();await screenshot(owner,'01-assets-registered');
+    await click(owner,'assets-move');f=modal(owner);await f.locator('[name=location]').fill('Harbor B');await f.locator('[name=status]').selectOption('in-transit');await f.locator('[name=date]').fill('2026-11-03');await f.locator('[name=note]').fill('Moved to fictional warehouse B');await submit(owner);await owner.getByRole('cell',{name:'Harbor B',exact:true}).waitFor();await screenshot(owner,'02-pallet-movement');
+    const audit=await userPage('harbor-auditor',true);await audit.getByRole('heading',{name:'Inventory audit portal',exact:true}).waitFor();assert.equal(await audit.locator('nav [data-key="Accounting"]').count(),0);assert.equal(await audit.locator('[data-act=assets-register]').count(),0);await screenshot(audit,'03-separate-audit-portal');
+    await click(audit,'assets-count-start');f=modal(audit);await f.locator('[name=name]').fill('Harborline November physical count');await f.locator('[name=date]').fill('2026-11-04');await f.locator('[name=units]').check();await submit(audit);
+    await click(audit,'assets-count-observe');f=modal(audit);await f.locator(`[name="qty-${item}"]`).fill('8');await f.locator('[name=note]').fill('Two fittings missing; second observer confirmed');await screenshot(audit,'04-observed-count-discrepancy');await submit(audit);
+    await click(audit,'assets-count-submit');await screenshot(audit,'05-original-count-before-submission');await submit(audit);await audit.getByRole('cell',{name:'submitted',exact:true}).waitFor();
+    const auditData=await api(audit,'assets?companyId='+encodeURIComponent(company)+'&auditOnly=true'),session=auditData.data.sessions[0];assert.equal(session.expected[0].contents[0].quantity,10);assert.equal(session.observations[0].contents[0].quantity,8);
+    const denied=await api(audit,'assets',{type:'count-review',companyId:company,sessionId:session.id,version:session.version,decision:'approve',date:'2026-11-05',reason:'Auditor cannot approve',requestId:crypto.randomUUID()});assert.equal(denied.status,403);assert.match(denied.data.error,/approve permission/);
+    assert.equal((await api(audit,'assets',{type:'register',companyId:company,identifier:'BAD',requestId:crypto.randomUUID()})).status,403);
+    const approver=await userPage('harbor-approver',true);await approver.getByRole('heading',{name:'Inventory audit portal',exact:true}).waitFor();assert.equal(await approver.locator('[data-act=assets-count-start]').count(),0);await click(approver,'assets-count-review');f=modal(approver);await f.locator('[name=decision]').selectOption('approve');await f.locator('[name=date]').fill('2026-11-05');await f.locator('[name=reason]').fill('Independent physical recount verified');await screenshot(approver,'06-independent-approver-review');await submit(approver);await approver.getByRole('cell',{name:'approved',exact:true}).waitFor();await click(approver,'assets-count-detail');await screenshot(approver,'07-approved-count-and-history');assert.match(await modal(approver).innerText(),/10 × Harborline fictional brass fittings/);assert.match(await modal(approver).innerText(),/8 × Harborline fictional brass fittings/);await modal(approver).locator('[data-act=cancel]').click();
+    const restricted=await userPage('harbor-restricted');assert.equal((await api(restricted,'assets?companyId='+encodeURIComponent(company))).status,403);assert.equal(await restricted.locator('nav [data-key="Assets & pallets"]').count(),0);await restricted.goto(new URL('/audit',suite.mainUrl).href);await restricted.getByText('Asset workspace unavailable.',{exact:true}).first().waitFor();assert.ok(!(await restricted.locator('.workspace').innerText()).includes('HL-PALLET-001'));
+    const stored=openStore(database);try{const state=readBooks(stored).state,book=state.companies.find(c=>c.id===company);assert.deepEqual(position(book,item,'Harbor A'),{qty:10,value:10000});assert.deepEqual(position(book,item,'Harbor B'),{qty:8,value:8000});validateState(state);const retained=assetsView(stored,{id:ownerId,role:'owner'},state,{companyId:company});assert.equal(retained.sessions[0].status,'approved');assert.equal(retained.movements.length,3);assert.equal(retained.units[0].contents[0].quantity,8);}finally{stored.close();}
+    await suite.close();suite=null;suite=await createSuite({database,mainPort:0,workerPort:0});const reopened=await userPage('harbor-owner');await click(reopened,'nav','Assets & pallets');await reopened.getByRole('cell',{name:'approved',exact:true}).waitFor();await click(reopened,'assets-history');assert.match(await modal(reopened).innerText(),/count-approved/);assert.match(await modal(reopened).innerText(),/Fictional receiving check/);await screenshot(reopened,'08-movement-history-after-restart');await modal(reopened).locator('[data-act=cancel]').click();
+    await click(reopened,'nav','Warehouse');await click(reopened,'adjust');f=modal(reopened);await f.locator('[name=direction]').selectOption('adjust out');await f.locator('[name=location]').fill('Harbor B');await f.locator('[name=qty]').fill('1');await f.locator('[name=label]').fill('Fictional outgoing stock');await f.locator('[name=date]').fill('2026-11-06');await f.locator('[type=submit]').click();await modal(reopened).waitFor({state:'hidden'});await reopened.locator('.workspace .error').filter({hasText:'packed in tracked pallets'}).waitFor();
+    await click(reopened,'nav','Assets & pallets');await click(reopened,'assets-contents');f=modal(reopened);await f.locator(`[name="qty-${item}"]`).fill('7');await f.locator('[name=date]').fill('2026-11-06');await f.locator('[name=note]').fill('Unpacked one fitting for fictional dispatch');await screenshot(reopened,'09-unpack-before-stock-dispatch');await submit(reopened);
+    await click(reopened,'nav','Warehouse');await click(reopened,'adjust');f=modal(reopened);await f.locator('[name=direction]').selectOption('adjust out');await f.locator('[name=location]').fill('Harbor B');await f.locator('[name=qty]').fill('1');await f.locator('[name=label]').fill('Fictional outgoing stock');await f.locator('[name=date]').fill('2026-11-06');await submit(reopened);
+    const final=openStore(database);try{const state=readBooks(final).state,book=state.companies.find(c=>c.id===company);assert.deepEqual(position(book,item,'Harbor B'),{qty:7,value:7000});const v=assetsView(final,{id:ownerId,role:'owner'},state,{companyId:company});assert.equal(v.units[0].contents[0].quantity,7);assert.equal(v.sessions[0].corrections[0].after[0].quantity,8,'original approved count is retained after later unpacking');}finally{final.close();}
+    assert.deepEqual(errors,[]);t.diagnostic('Actual Edge '+browser.version()+'; fictional Harborline data, separate auditor/approver sessions, stock values and restart verified.');
+  }finally{await browser?.close();await suite?.close();await rm(root,{recursive:true,force:true});}
+});
+
+test('clean Full Suite owner can open the asset workspace before creating a company',{skip:!process.env.FIRMQUILL_BROWSER_EXE},async t=>{
+  const {chromium}=createRequire(import.meta.url)(process.env.FIRMQUILL_PLAYWRIGHT||'playwright'),root=await mkdtemp(join(tmpdir(),'fq-assets-clean-')),database=join(root,'clean.sqlite'),db=openStore(database),password='Fictional clean workspace 2026!';let browser,suite;
+  try{const hash=await passwordHash(password);tx(db,()=>putUser(db,null,{name:'Harborline Clean Owner',username:'clean-owner',role:'owner',assignments:[]},hash,{bootstrap:true}));seedFixtureTerms(db);}finally{db.close();}
+  try{suite=await createSuite({database,mainPort:0,workerPort:0});browser=await chromium.launch({executablePath:process.env.FIRMQUILL_BROWSER_EXE,headless:true});const page=await browser.newPage();await page.goto(suite.mainUrl);await page.locator('#login [name=username]').fill('clean-owner');await page.locator('#login [name=password]').fill(password);await page.locator('#login button').click();await acceptFixtureBrowser(page);await page.locator('[data-act=nav][data-key="Assets & pallets"]').click();await page.getByText('No asset workspace is assigned to this account.',{exact:false}).waitFor();assert.equal(await page.locator('[data-act=assets-register]').count(),0);}finally{await browser?.close();await suite?.close();await rm(root,{recursive:true,force:true});}
+});

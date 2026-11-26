@@ -1,5 +1,5 @@
 {
-  "version":"0.3.0-preview.1",
+  "version":"0.4.0-preview.1",
   "scope":"public-setup-only",
   "articles":[
     {"id":"install-launch","title":"Install and launch FirmQuill Full Suite","file":"install-launch.md","status":"verified-local","keywords":["install","launch","start","node","runtime","port","database","host","empty","setup"]},

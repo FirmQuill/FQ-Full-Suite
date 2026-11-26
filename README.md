@@ -1,6 +1,6 @@
 # FirmQuill Full Suite
 
-Version **0.3.0-preview.1** · self-hosted Windows/Node 24 preview
+Version **0.4.0-preview.1** · self-hosted Windows/Node 24 preview
 
 Read the illustrated, searchable [public setup guide](SETUP-GUIDE.html), or its [Markdown source](SETUP-GUIDE.md), to install, create the first administrator, initialize empty books or an approved company package, verify setup and diagnose setup failures.
 
@@ -10,6 +10,6 @@ Default local portals are http://127.0.0.1:4179/ (books) and http://127.0.0.1:41
 
 The reusable full customer manual is delivered separately for migration or support customers. It is absent from this checkout, public help and the standard runtime package. Company-specific migration packages and handoffs are separate private data; never add them to this repository or download.
 
-Generic migration mappings and fictional fixtures do not establish native QuickBooks, Wave or ADP export-schema compatibility. The existing verified bank templates are retained. Final payroll and tax filing remain outside this preview's verified scope. FirmQuill Lite and payroll research are unchanged.
+Generic migration mappings and fictional fixtures do not establish native QuickBooks, Wave or ADP export-schema compatibility. The existing verified bank templates are retained. Final payroll and tax filing remain outside this preview's verified scope. The companion Lite upgrade remains single-operator. Payroll research is unchanged.
 
 First-party source is under [MIT](LICENSE); see [component notices](THIRD-PARTY-NOTICES.md). Agreement acceptance remains separate from the source license. Source tests and release builder are included for local verification; see [test results](TEST-RESULTS.md). The public runtime ZIP is built from an explicit allowlist and contains only runtime files, licenses and public setup help.

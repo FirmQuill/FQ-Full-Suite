@@ -1,3 +1,4 @@
+import {initializeProjects,visibleProjectJobs,authorizeProjectAction} from './project-workspace.mjs';
 import {randomUUID} from 'node:crypto';
 import {apply, validateState} from './shared/core.mjs';
 
@@ -54,6 +55,7 @@ function slices(start, end, zone) {
 }
 
 export function initializeWorker(db) {
+  initializeProjects(db);
   db.exec(`
     CREATE TABLE IF NOT EXISTS worker_shifts (
       id TEXT PRIMARY KEY, company TEXT NOT NULL, employee TEXT NOT NULL, user_id TEXT NOT NULL,
@@ -95,14 +97,14 @@ function iso(millis) { return millis == null ? null : new Date(millis).toISOStri
 
 export function workerView(db, user, state) {
   const {book, person} = workerIdentity(user, state);
-  const jobs = book.jobs.map(({id, name}) => ({id, name}));
+  const jobs = visibleProjectJobs(db,user,book);
   const records = db.prepare('SELECT * FROM worker_shifts WHERE company=? AND employee=? AND user_id=? ORDER BY started DESC, id')
     .all(book.id, person.id, user.id);
   const requests = db.prepare('SELECT kind,start,end,reason,status,created,reviewed FROM worker_requests WHERE shift=? ORDER BY created,id');
   const shifts = records.map(s => ({
     id:s.id, job:jobs.find(j => j.id === s.job)?.name || 'Job', zone:s.zone,
     start:iso(s.started), end:iso(s.ended), approvedStart:iso(s.effective_start), approvedEnd:iso(s.effective_end),
-    reviews:requests.all(s.id).map(r => ({kind:r.kind, start:iso(r.start), end:iso(r.end), reason:r.reason, status:r.status, created:iso(r.created), reviewed:iso(r.reviewed)}))
+    reviews:requests.all(s.id).map(r => ({kind:r.kind, start:iso(r.start), end:iso(r.end), reason:jobs.some(j=>j.id===s.job)?r.reason:(r.reason?'Project details restricted':''), status:r.status, created:iso(r.created), reviewed:iso(r.reviewed)}))
   }));
   const time = book.time.filter(r => r.employee === person.id).map(r => ({
     id:r.id, date:r.date, minutes:r.minutes, job:jobs.find(j => j.id === r.job)?.name || 'Job', approved:r.approved
@@ -115,6 +117,7 @@ export function workerCommand(db, user, state, action, at = new Date()) {
   const now = at.getTime();
   const own = [book.id, person.id, user.id];
   if (action?.type === 'clock-in') {
+    authorizeProjectAction(db,user,state,book.id,{jobId:action.jobId});
     requireValue(book.jobs.some(j => j.id === action.jobId), 'Select a job assigned to this company.');
     const open = db.prepare('SELECT id FROM worker_shifts WHERE company=? AND employee=? AND ended IS NULL').get(book.id, person.id);
     requireValue(!open, 'A shift is already open for this employee.', 409);
@@ -148,7 +151,7 @@ export function workerPending(db, user, state) {
   if (!['owner','manager'].includes(user?.role)) return [];
   const rows = db.prepare(`SELECT r.*,s.company,s.employee,s.user_id,s.zone,s.job,s.started,s.ended,s.effective_start,s.effective_end
     FROM worker_requests r JOIN worker_shifts s ON s.id=r.shift WHERE r.status='pending' ORDER BY r.created,r.id`).all();
-  return rows.filter(r => mayReview(user, r.company)).map(r => {
+  return rows.filter(r => mayReview(user, r.company)).filter(r=>{try{authorizeProjectAction(db,user,state,r.company,{job:r.job});return true;}catch{return false;}}).map(r => {
     const c = state.companies.find(c => c.id === r.company);
     const employee = c?.employees.find(p => p.id === r.employee)?.name || 'Employee';
     const job = c?.jobs.find(p => p.id === r.job)?.name || 'Job';
@@ -168,6 +171,7 @@ export function workerReview(db, user, state, requestId, decision, at = new Date
   const r = db.prepare('SELECT * FROM worker_requests WHERE id=?').get(requestId);
   const s = r && db.prepare('SELECT * FROM worker_shifts WHERE id=?').get(r.shift);
   requireValue(s && mayReview(user, s.company), 'Review unavailable.', 404);
+  authorizeProjectAction(db,user,state,s.company,{job:s.job});
   requireValue(r.status === 'pending', 'Request already reviewed.', 409);
   requireValue(s.user_id !== user.id, 'Another manager must review your own time.', 403);
   const now = at.getTime();

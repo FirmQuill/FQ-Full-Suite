@@ -1,0 +1,28 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {openStore,saveBooks,putUser,safeUser,tx,readBooks} from '../store.mjs';
+import {newVault,apply} from '../shared/core.mjs';
+import {projectCommand} from '../project-workspace.mjs';
+import {recordsView,setEmployeeProfile,recordsCommand} from '../records.mjs';
+import {workerCommand,workerView,workerPending,workerReview} from '../worker.mjs';
+test('legacy employee assignments and pending shifts obey the project boundary after access changes',t=>{
+ const db=openStore(':memory:');t.after(()=>db.close());let state=newVault('Harborline fictional privacy',['jobs','employees']),companyId=state.companies[0].id;
+ state=apply(state,companyId,{type:'employee',name:'Fictional Worker',rate:2000,state:'WA',locality:'Fixture',date:'2026-01-01'});saveBooks(db,state);
+ const make=(username,role)=>{const id=putUser(db,null,{username,name:username,role,assignments:role==='owner'?[]:[companyId]},'!pending-invite:fixture',{bootstrap:true});return safeUser(db.prepare('SELECT * FROM accounts WHERE id=?').get(id));};
+ const owner=make('fictional-owner','owner'),hr=make('fictional-hr','hr'),manager=make('fictional-manager','manager');const worker=safeUser(db.prepare("SELECT * FROM accounts WHERE role='worker'").get());
+ let r=tx(db,()=>projectCommand(db,owner,state,{type:'project-save',companyId,name:'Harborline confidential acquisition',departmentId:'legal',visibility:'company'}));state=r.state;saveBooks(db,state);const job=r.result.projectId;
+ setEmployeeProfile(db,state,companyId,worker.employeeId,{projectAssignments:[{jobId:job,start:'2026-01-01',end:'',role:'Confidential acquisition plan'}]},owner.id);
+ workerCommand(db,worker,state,{type:'clock-in',jobId:job},new Date('2026-01-02T10:00:00Z'));const shift=db.prepare('SELECT id FROM worker_shifts').get();workerCommand(db,worker,state,{type:'clock-out',shiftId:shift.id},new Date('2026-01-02T11:00:00Z'));
+ workerCommand(db,worker,state,{type:'correction',shiftId:shift.id,start:'2026-01-02T10:00:00Z',end:'2026-01-02T11:00:00Z',reason:'Harborline confidential acquisition planning'},new Date('2026-01-02T12:00:00Z'));
+ assert.ok(JSON.stringify(workerView(db,worker,state)).includes('confidential acquisition planning'));
+ r=tx(db,()=>projectCommand(db,owner,state,{type:'project-save',companyId,id:job,version:1,name:'Harborline confidential acquisition',departmentId:'legal',visibility:'restricted'}));state=r.state;saveBooks(db,state);
+ const records=recordsView(db,worker,state);assert.ok(!JSON.stringify(records).includes('Confidential acquisition plan'));assert.ok(!JSON.stringify(records).includes(job));
+ assert.ok(!JSON.stringify(workerView(db,worker,state)).includes('confidential acquisition'));assert.match(db.prepare("SELECT reason FROM worker_requests WHERE kind='Correction'").get().reason,/confidential acquisition planning/);
+ const edited=recordsCommand(db,owner,state,{type:'profile-update',companyId,employeeId:worker.employeeId,version:1,patch:{personalPhone:'555-0100'}});assert.ok(edited.profile.projectAssignments.some(a=>a.jobId===job));
+ const ownerSettings=db.prepare('SELECT body FROM company_record_settings WHERE company=?').get(companyId);
+ const settings=ownerSettings?JSON.parse(ownerSettings.body):{contacts:[],locations:{},fieldRules:{}};settings.fieldRules.personalPhone='edit';db.prepare('INSERT INTO company_record_settings VALUES(?,?) ON CONFLICT(company) DO UPDATE SET body=excluded.body').run(companyId,JSON.stringify(settings));
+ const response=recordsCommand(db,worker,state,{type:'profile-update',companyId,employeeId:worker.employeeId,version:2,patch:{personalPhone:'555-0101'}});assert.ok(!JSON.stringify(response).includes(job));assert.ok(!JSON.stringify(response).includes('Confidential acquisition plan'));
+ assert.deepEqual(workerPending(db,manager,state),[]);const request=db.prepare('SELECT id FROM worker_requests').get();assert.throws(()=>workerReview(db,manager,state,request.id,'approve'),/Project access denied/);
+ assert.throws(()=>recordsCommand(db,hr,state,{type:'profile-update',companyId,employeeId:worker.employeeId,version:3,patch:{projectAssignments:[{jobId:job,start:'2026-01-01',end:'',role:'No access'}]}}),/Project access denied/);
+ assert.equal(readBooks(db).state.companies[0].time.length,0);
+});

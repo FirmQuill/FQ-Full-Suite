@@ -1,3 +1,7 @@
+import {migrateOwnerDesk} from './desk-migration.mjs';
+import {initializeDepartments,ensureDepartments} from './departments.mjs';
+import {initializeProjects,projectBusinessState,authorizeProjectAction,visibleProjectJobs} from './project-workspace.mjs';
+import {initializeAssets,validateAssetAllocations} from './assets-workspace.mjs';
 import {DatabaseSync} from 'node:sqlite';
 import {randomBytes,randomUUID,scrypt,timingSafeEqual,createHash} from 'node:crypto';
 import {promisify} from 'node:util';
@@ -36,6 +40,10 @@ function openStore(filename){
       initializeIdentity(db);
       initializeBranding(db);
       initializeAccess(db);
+      initializeDepartments(db);
+      initializeProjects(db);
+      initializeAssets(db);
+      migrateOwnerDesk(db,readBooks(db).state);
       ensureWorkerAccounts(db,readBooks(db).state);
       db.exec('PRAGMA user_version=2');
     });
@@ -47,9 +55,12 @@ function readBooks(db){const r=db.prepare('SELECT revision,body FROM books WHERE
 function revisionCheck(n,expected){requireThat(Number.isSafeInteger(expected)&&n===expected,409,'The workspace changed. Refresh and review before saving.');}
 function saveBooks(db,state){
   validateState(state);
+  validateAssetAllocations(db,state);
   const raw=JSON.stringify(state);requireThat(Buffer.byteLength(raw)<=32*1024*1024,413,'The portable books exceed 32 MiB.');
   db.prepare('UPDATE books SET body=?,revision=revision+1 WHERE id=1').run(raw);
   ensureWorkerAccounts(db,state);
+  ensureDepartments(db,state);
+  migrateOwnerDesk(db,state);
 }
 function audit(db,user,company,kind,detail){db.prepare('INSERT INTO audit(at,actor,companyId,kind,detail) VALUES(?,?,?,?,?)').run(new Date().toISOString(),user.id,company||'',kind,detail);}
 function safeUser(row){return row&&{id:row.id,username:row.username,name:row.name,role:row.role,assignments:JSON.parse(row.assignments),employeeId:row.employeeId,active:!!row.active,authVersion:row.authVersion};}
@@ -58,9 +69,9 @@ function owner(u){requireThat(u.role==='owner',403,'Owner access required.');}
 function manager(u){requireThat(['owner','manager'].includes(u.role),403,'Manager access required.');}
 function scoped(u,state,db){
   const allowed=state.companies.filter(c=>canAccess(u,c.id));
-  if(['hr','payroll'].includes(u.role)){const minimal={...state,companies:allowed.map(c=>({...c,employees:c.employees.map(({id,name})=>({id,name})),parties:[],items:[],time:[],docs:[],moves:[],entries:[],assets:[],bank:[],reconciliations:[],history:[],attachments:[]})),groups:[]};return db?projectErpState(db,u,minimal):minimal;}
+  if(['hr','payroll'].includes(u.role)){const minimal={...state,companies:allowed.map(c=>({...c,employees:c.employees.map(({id,name})=>({id,name})),parties:[],items:[],time:[],docs:[],moves:[],entries:[],assets:[],bank:[],reconciliations:[],history:[],attachments:[]})),groups:[]};return db?projectBusinessState(db,u,projectErpState(db,u,minimal),state):minimal;}
   const result={...state,companies:allowed,groups:state.groups.filter(g=>g.members.every(k=>canAccess(u,k)))};
-  return db?projectErpState(db,u,result):result;
+  return db?projectBusinessState(db,u,projectErpState(db,u,result),state):result;
 }
 async function passwordHash(password){
   requireThat(typeof password==='string'&&password.length>=12&&Buffer.byteLength(password)<=512,400,'Choose a password of 12–512 characters within 512 UTF-8 bytes.');
@@ -120,6 +131,7 @@ function actionFor(db,user,payload){
   const {state,revision}=readBooks(db),{companyId,action}=payload;
   authorizeAction(user,state,companyId,action);
   requireActionArea(db,user,action);
+  authorizeProjectAction(db,user,state,companyId,action);
   const signature=createHash('sha256').update(JSON.stringify([companyId,action])).digest('hex');
   const old=db.prepare('SELECT * FROM requests WHERE actor=? AND requestId=?').get(user.id,action.requestId);
   if(old){requireThat(old.fingerprint===signature,409,'That request ID belongs to a different operation.');return old.approval?{pendingApproval:old.approval}:{};}
@@ -140,7 +152,7 @@ function actionFor(db,user,payload){
 }
 function approvalList(db,u){
   requireThat(['owner','manager','bookkeeper'].includes(u.role),403,'Approval access denied.');
-  const list=db.prepare("SELECT * FROM approvals WHERE status='pending' ORDER BY rowid").all().filter(r=>canAccess(u,r.companyId)&&(u.role!=='bookkeeper'||r.requestedBy===u.id)).filter(r=>{try{requireActionArea(db,u,JSON.parse(r.action));return true;}catch{return false;}}).map(r=>{
+  const list=db.prepare("SELECT * FROM approvals WHERE status='pending' ORDER BY rowid").all().filter(r=>canAccess(u,r.companyId)&&(u.role!=='bookkeeper'||r.requestedBy===u.id)).filter(r=>{try{requireActionArea(db,u,JSON.parse(r.action));authorizeProjectAction(db,u,readBooks(db).state,r.companyId,JSON.parse(r.action));return true;}catch{return false;}}).map(r=>{
     const {action,...fields}=r;const a=JSON.parse(action);
     const detail=JSON.stringify(a,(k,v)=>k==='data'?'[attachment]':v);
     return {...fields,detail};
@@ -159,6 +171,7 @@ function decide(db,user,p){
   requireThat(r&&canAccess(user,r.companyId),404,'Approval is unavailable.');
   requireThat(r.status==='pending'&&r.requestedBy!==user.id,409,'Approval already decided or requested by this user.');
   requireActionArea(db,user,JSON.parse(r.action));
+  authorizeProjectAction(db,user,state,r.companyId,JSON.parse(r.action));
   if(p.decision==='approve')saveBooks(db,apply(state,r.companyId,JSON.parse(r.action)));
   else db.prepare('UPDATE books SET revision=revision+1').run();
   db.prepare('UPDATE approvals SET status=? WHERE id=?').run(p.decision==='approve'?'approved':'rejected',r.id);

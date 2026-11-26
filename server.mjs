@@ -1,3 +1,8 @@
+import {portableDeskState,portableDeskReport} from './portable-desk.mjs';
+import {ownerDeskMigrationReports} from './desk-migration.mjs';
+import {departmentView,departmentCommand} from './departments.mjs';
+import {projectView,projectCommand,visibleProjectJobs,projectBusinessState} from './project-workspace.mjs';
+import {assetsView,assetsCommand} from './assets-workspace.mjs';
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {randomBytes,createHash} from 'node:crypto';
@@ -19,7 +24,7 @@ const token=()=>randomBytes(32).toString('base64url');
 const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
 const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs']);
-const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs']);
+const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','audit.html']);
 const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
@@ -54,13 +59,22 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     if(u.role!=='worker'&&u.employeeId)requireThat(db.prepare('SELECT enabled FROM employee_erp_flags WHERE company=? AND employee=?').get(u.assignments[0],u.employeeId)?.enabled,401,'ERP access is disabled.');
     session.until=Date.now()+30*60000;return u;
   }
+  function workspacePagesFor(user,state){
+    if(user.role==='owner')return ['Departments','Project tracker','Assets & pallets','Inventory audit'];
+    const pages=[],departments=departmentView(db,user,state),projects=projectView(db,user,state);
+    if(departments.workspaces.length)pages.push('Departments');
+    if(projects.projects.length||departments.workspaces.some(w=>w.rights.includes('manage')))pages.push('Project tracker');
+    const rights=new Set();for(const c of state.companies){try{for(const right of assetsView(db,user,state,{companyId:c.id}).rights)rights.add(right);}catch{}}if(['view','manage'].some(r=>rights.has(r)))pages.push('Assets & pallets');
+    if(['audit','approve'].some(r=>rights.has(r)))pages.push('Inventory audit');
+    return pages;
+  }
   function snapshot(user,s,extras={}){
     if(!hasAccepted(user))return {termsRequired:termsVersion,csrf:s.csrf};
     const {state,revision}=readBooks(db);
     const features=s.portal==='worker'?workerFeatures(db,user):[];
     const time=s.portal==='worker'?workerView(db,user,state):null;
-    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,recordsView(db,user,state)),benefits:features.includes('Benefits')?benefitsView(db,user,state):null}:
-      {user:{...publicUser(user),areas:accountAreas(db,user)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
+    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null}:
+      {user:{...publicUser(user),areas:accountAreas(db,user),workspaces:workspacePagesFor(user,state)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
   function hasAccepted(user){return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);}
   function portalServer(portal,publicOrigin){
@@ -78,7 +92,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         const url=new URL(req.url,origin),path=url.pathname;
         if(!path.startsWith('/api/')){
           requireThat(req.method==='GET'||req.method==='HEAD',405,'Method unavailable.');
-          let name=path==='/'?'index.html':path.slice(1),root='web/'+portal+'/';
+          let name=path==='/'?'index.html':path==='/audit'&&portal==='main'?'audit.html':path.slice(1),root='web/'+portal+'/';
           if(path.startsWith('/legal/')){
             name=path.slice(7);requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');root='web/legal/';
           }else if(path.startsWith('/shared/')){
@@ -168,7 +182,21 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           const result=tx(db,()=>{const active=userFor(s,portal);owner(active);const result=saveWorkerBranding(db,readBooks(db).state,p);audit(db,active,p.companyId,'worker portal branding updated',JSON.stringify({mode:result.mode,parent:result.parent,hasLogo:result.hasLogo}));return result;});
           send(res,200,result);return;
         }
-        if(path==='/api/records'&&!post){if(portal==='main')requireArea(db,u,'Employee records');const r=recordsView(db,u,workforceState,scope);send(res,200,portal==='worker'?workerRecords(db,u,r):r);return;}
+        if(portal==='main'&&['/api/departments','/api/projects','/api/assets'].includes(path)){
+          const kind=path.slice(5);
+          if(!post){const view=kind==='departments'?departmentView(db,u,workforceState,scope):kind==='projects'?projectView(db,u,workforceState,scope):assetsView(db,u,workforceState,{...scope,auditOnly:url.searchParams.get('auditOnly')==='true'});if(kind==='departments'&&u.role==='owner'&&scope.companyId)view.ownerDeskConversions=ownerDeskMigrationReports(db,scope.companyId);send(res,200,view);return;}
+          const payload=await jsonBody(req,512*1024);requireThat(payload.action&&typeof payload.action==='object',400,'Choose a workspace action.');
+          const result=tx(db,()=>{const active=userFor(s,portal),{state}=readBooks(db);const result=kind==='departments'?departmentCommand(db,active,state,payload.action):kind==='projects'?projectCommand(db,active,state,payload.action):assetsCommand(db,active,state,payload.action);if(result.state)saveBooks(db,result.state);return result.result||result;});
+          send(res,200,{result});return;
+        }
+        if(portal==='main'&&['/api/workspaces/search','/api/workspaces/export'].includes(path)&&!post){
+          const departments=departmentView(db,u,workforceState,scope),projects=projectView(db,u,workforceState,scope);
+          if(path.endsWith('/export')){audit(db,u,scope.companyId||'','authorized workspace export','Permission-scoped records');send(res,200,{format:'firmquill.authorized-workspaces.v1',version:'0.4.0-preview.1',departments:departments.workspaces,projects:projects.projects});return;}
+          const q=String(url.searchParams.get('q')||'').trim().toLowerCase();requireThat(q.length<=160,400,'Search within 160 characters.');
+          const rows=[...departments.workspaces.flatMap(w=>(w.records||[]).map(r=>({id:r.id,type:r.kind,title:r.title}))),...projects.projects.flatMap(p=>[{id:p.id,type:'project',title:p.name},...(p.tasks||[]).map(t=>({id:t.id,type:'task',title:t.title}))])];
+          send(res,200,{results:rows.filter(r=>!q||r.title.toLowerCase().includes(q)).slice(0,250)});return;
+        }
+        if(path==='/api/records'&&!post){if(portal==='main')requireArea(db,u,'Employee records');const r=recordsView(db,u,workforceState,scope);if(r.jobs){const allowed=new Set(workforceState.companies.flatMap(c=>visibleProjectJobs(db,u,c)).map(j=>j.id));r.jobs=r.jobs.filter(j=>allowed.has(j.id));}send(res,200,portal==='worker'?workerRecords(db,u,r):r);return;}
         if(path==='/api/benefits'&&!post){if(portal==='main')requireArea(db,u,'Benefits administration');else requireWorkerFeature(db,u,'Benefits');send(res,200,benefitsView(db,u,workforceState,scope));return;}
         if(path.startsWith('/api/records/file/')&&!post){if(portal==='main')requireArea(db,u,'Employee records');else requireWorkerFeature(db,u,'Pay');const f=recordFile(db,u,workforceState,decodeURIComponent(path.slice(18)));res.writeHead(200,{'Content-Type':f.mime,'Content-Disposition':'attachment; filename="'+f.filename.replace(/[^a-zA-Z0-9._-]/g,'_')+'"'});res.end(f.bytes);return;}
         if(path.startsWith('/api/benefits/file/')&&!post){if(portal==='main')requireArea(db,u,'Benefits administration');else requireWorkerFeature(db,u,'Benefits');const f=benefitFile(db,u,workforceState,decodeURIComponent(path.slice(19)));res.writeHead(200,{'Content-Type':f.mime,'Content-Disposition':'attachment; filename="'+f.filename.replace(/[^a-zA-Z0-9._-]/g,'_')+'"'});res.end(f.bytes);return;}
@@ -227,7 +255,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           owner(active());
           if(path==='/api/transfer/export'){
             const {state}=readBooks(db);requireThat(state.companies.length,400,'Create or import books first.');
-            const result=await limited(()=>exportLite(state,p.password));owner(active());tx(db,()=>audit(db,u,'','export','Encrypted owner snapshot'));send(res,200,result);return;
+            const portable=portableDeskState(db,state),deskReport=portableDeskReport(portable);const result=await limited(()=>exportLite(portable,p.password));owner(active());tx(db,()=>audit(db,u,'','export','Encrypted owner snapshot'));send(res,200,{...result,deskReport});return;
           }
           requireThat(['/api/transfer/preview','/api/transfer/import'].includes(path),404,'Endpoint unavailable.');
           assertEmptyDestination(readBooks(db).state);

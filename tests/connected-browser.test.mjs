@@ -6,6 +6,7 @@ import {join} from 'node:path';
 import {createRequire} from 'node:module';
 import {createSetupWizard} from '../setup-wizard.mjs';
 import {createSuite} from '../server.mjs';
+import {INSTALLED_VERSION} from '../support.mjs';
 import {openStore,readBooks} from '../store.mjs';
 
 test('fresh browser setup, mapped multi-source package, agent approval and public-only help survive restart',{skip:!process.env.FIRMQUILL_BROWSER_EXE},async t=>{
@@ -47,7 +48,7 @@ test('fresh browser setup, mapped multi-source package, agent approval and publi
     const grant=JSON.parse(await modal().locator('pre').innerText());await click('cancel');
     const state=await api('session'),company=state.state.companies[0];
     const result=await fetch(suite.mainUrl+'/api/agents/v1/proposals',{method:'POST',headers:{Authorization:'Bearer '+grant.token,'Content-Type':'application/json'},body:JSON.stringify({companyId:company.id,requestId:'fictional-browser-proposal',revision:state.revision,action:{type:'contact',name:'FICTIONAL proposed buyer',kind:'Customer',date:'2026-11-26'}})});assert.equal(result.status,200);const proposal=await result.json();await click('refresh');await click('agent-review',proposal.id);await shot(page,'agent-review-proposal',privateShots);await modal().locator('[name=decision]').selectOption('approve');await modal().locator('button[type=submit]').click();await modal().waitFor({state:'hidden'});assert.ok((await api('session')).state.companies[0].parties.some(r=>r.name==='FICTIONAL proposed buyer'));
-    await click('nav','Setup help');await click('support-ask');await modal().locator('[name=question]').fill('How do I initialize a fresh workspace with a setup package?');await modal().locator('button[type=submit]').click();await modal().getByRole('heading',{name:'Public setup guidance'}).waitFor();assert.match(await modal().innerText(),/0\.3\.0-preview\.1/);await shot(page,'12-public-setup-help');await click('cancel');
+    await click('nav','Setup help');await click('support-ask');await modal().locator('[name=question]').fill('How do I initialize a fresh workspace with a setup package?');await modal().locator('button[type=submit]').click();await modal().getByRole('heading',{name:'Public setup guidance'}).waitFor();assert.ok((await modal().innerText()).includes(INSTALLED_VERSION));await shot(page,'12-public-setup-help');await click('cancel');
     const before=await api('session');await suite.close();suite=null;suite=await createSuite({database,mainPort:0,workerPort:0});await login(suite.mainUrl);assert.deepEqual((await api('session')).state,before.state);
     secondSuite=await createSuite({database:join(dir,'package.sqlite'),mainPort:0,workerPort:0});const check=openStore(join(dir,'package.sqlite'));try{assert.equal(readBooks(check).state.companies[0].parties.length,2);assert.equal(check.prepare('SELECT count(*) AS n FROM migration_setup_receipts').get().n,1);}finally{check.close();}
     assert.deepEqual(errors,[]);t.diagnostic('Real Chromium/Edge screenshots; all data fictional; no token screenshot saved.');

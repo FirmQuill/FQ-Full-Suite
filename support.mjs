@@ -2,7 +2,7 @@
 import {readFile,realpath,stat} from 'node:fs/promises';
 import {resolve,relative,isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
-export const INSTALLED_VERSION='0.3.0-preview.1';
+export const INSTALLED_VERSION='0.4.0-preview.1';
 const appDirectory=fileURLToPath(new URL('./',import.meta.url)),defaultRoot=fileURLToPath(new URL('./kb/',import.meta.url));
 const fail=(ok,message,status=400)=>{if(!ok)throw Object.assign(Error(message),{status});};
 const inside=(parent,child)=>{const r=relative(parent,child);return r===''||(!r.startsWith('..\\')&&!r.startsWith('../')&&r!=='..'&&!isAbsolute(r));};

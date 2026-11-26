@@ -1,3 +1,4 @@
+import {initializeProjects,visibleProjectJobs,authorizeProjectAction} from './project-workspace.mjs';
 import {randomUUID} from 'node:crypto';
 
 const PROFILE_FIELDS = new Set(['hireDate','employmentStatus','department','title','location','workEmail','businessPhone','personalEmail','personalPhone','managerEmployeeId','managerAccountId','hrContactId','payrollContactId','groupIds','education','certifications','projectAssignments']);
@@ -22,6 +23,7 @@ function directManager(user,company,profile){return role(user,company,['manager'
 function mayReview(user,company,profile){return hr(user,company)||directManager(user,company,profile);}
 
 export function initializeRecords(db){
+  initializeProjects(db);
   db.exec(`CREATE TABLE IF NOT EXISTS employee_records(company TEXT NOT NULL,employee TEXT NOT NULL,body TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(company,employee));
     CREATE TABLE IF NOT EXISTS employee_reviews(id TEXT PRIMARY KEY,company TEXT NOT NULL,employee TEXT NOT NULL,title TEXT NOT NULL,body TEXT NOT NULL,status TEXT NOT NULL,author TEXT NOT NULL,created TEXT NOT NULL,updated TEXT NOT NULL,published TEXT,publisher TEXT,acknowledged TEXT,version INTEGER NOT NULL);
     CREATE INDEX IF NOT EXISTS employee_reviews_scope ON employee_reviews(company,employee,status);
@@ -143,7 +145,8 @@ export function recordsView(db,user,state,query={}){
   const configCompany=selected?.companyId||query.companyId;
   const config=configCompany&&scoped(user,configCompany)?settings(db,configCompany):null;
   const managers=configCompany&&hr(user,configCompany)?db.prepare("SELECT id,name,role,assignments FROM accounts WHERE active=1 AND role IN ('owner','manager','hr') ORDER BY name").all().filter(a=>a.role==='owner'||JSON.parse(a.assignments).includes(configCompany)).map(({id,name})=>({id,name})):[];
-  return {employees,employee:selected||null,reviews,paystubs,corrections,contacts:selected?contacts(db,state,selected.companyId,selected.employeeId,employeeProfile(db,state,selected.companyId,selected.employeeId)):null,jobs:selected?person(state,selected.companyId,selected.employeeId).book.jobs.map(({id,name})=>({id,name})):[],managers,fieldRules:config?.fieldRules||defaultRules(),settings:config&&hr(user,configCompany)?config:null};
+  for(const employee of employees){const company=state.companies.find(c=>c.id===employee.companyId),allowed=new Set(visibleProjectJobs(db,user,company).map(j=>j.id)),profile=employee.profile;profile.projectAssignments=(profile.projectAssignments||[]).filter(p=>allowed.has(p.jobId));profile.history=(profile.history||[]).map(h=>{const changes=structuredClone(h.changes||{});let concealed=false;if(changes.projectAssignments){for(const side of ['before','after']){const original=changes.projectAssignments[side]||[];changes.projectAssignments[side]=original.filter(p=>allowed.has(p.jobId));if(changes.projectAssignments[side].length!==original.length)concealed=true;}if(!changes.projectAssignments.before.length&&!changes.projectAssignments.after.length)delete changes.projectAssignments;}return {...h,...(concealed?{reason:'Profile update; restricted assignment details omitted'}:{}),changes};}).filter(h=>Object.keys(h.changes).length);}
+  return {employees,employee:selected||null,reviews,paystubs,corrections,contacts:selected?contacts(db,state,selected.companyId,selected.employeeId,employeeProfile(db,state,selected.companyId,selected.employeeId)):null,jobs:selected?visibleProjectJobs(db,user,person(state,selected.companyId,selected.employeeId).book):[],managers,fieldRules:config?.fieldRules||defaultRules(),settings:config&&hr(user,configCompany)?config:null};
 }
 
 export function recordsCommand(db,user,state,action){
@@ -175,8 +178,9 @@ export function recordsCommand(db,user,state,action){
   if(action.type==='profile-update'){
     check(hr(user,company)||isOwn,'Profile edit access denied.',403);check(action.version===profile.version,'Profile changed. Refresh before saving.',409);
     const patch=validatedPatch(db,state,company,employee,action.patch);
+    if(patch.projectAssignments)for(const assignment of patch.projectAssignments)authorizeProjectAction(db,user,state,company,{job:assignment.jobId});
     if(!hr(user,company)){const rules=settings(db,company).fieldRules;check(Object.keys(patch).every(k=>EMPLOYEE_EDITABLE.has(k)&&rules[k]==='edit'),'This field requires HR correction.',403);}
-    const result=setEmployeeProfile(db,state,company,employee,patch,user.id,{effectiveDate:action.effectiveDate||today(),reason:action.reason||'Profile update'});return {profile:result};
+    const result=setEmployeeProfile(db,state,company,employee,patch,user.id,{effectiveDate:action.effectiveDate||today(),reason:action.reason||'Profile update'});return {profile:recordsView(db,user,state,{companyId:company,employeeId:employee}).employee?.profile||{}};
   }
   if(action.type==='profile-correction'){
     check(isOwn,'Own employee profile required.',403);const field=action.field;check(CORRECTABLE.has(field)&&settings(db,company).fieldRules[field]==='request','This field does not accept correction requests.');const clean=validatedPatch(db,state,company,employee,{[field]:action.value}),reason=text(action.reason||'',1000);check(reason,'Explain the requested correction.');const id=randomUUID();

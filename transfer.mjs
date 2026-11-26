@@ -1,3 +1,4 @@
+import {validateDesk} from './shared/desk-core.mjs';
 import {createHash} from 'node:crypto';
 import {createVaultService, MAX_BACKUP_BYTES} from './shared/vault.mjs';
 import {statements, validateState} from './shared/core.mjs';
@@ -28,6 +29,7 @@ function validatePortable(state) {
   const portableKeys = ['format', 'schema', 'edition', 'currency', 'companies', 'groups'];
   if (Object.keys(state).some(key => !portableKeys.includes(key))) throw Error('Unrecognized portable data sections.');
   for (const company of state.companies) {
+    validateDesk(company);
     for (const file of company.attachments) attachmentLength(file);
     for (const entry of company.entries) {
       if (!entry.pair && !entry.other) continue;
