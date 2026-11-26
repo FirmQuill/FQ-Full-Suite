@@ -4,6 +4,7 @@ import {promisify} from 'node:util';
 import {newVault,apply,validateState} from './shared/core.mjs';
 import {initializeWorker,workerPending,workerReview,workerView,workerCommand} from './worker.mjs';
 import {initializeRecords} from './records.mjs';
+import {initializeBranding} from './branding.mjs';
 import {initializeBenefits} from './benefits.mjs';
 import {initializeIdentity} from './identity.mjs';
 import {initializeAccess,ensureWorkerAccounts,accountAreas,saveAreas,ERP_AREAS,requireActionArea,projectErpState} from './access.mjs';
@@ -29,6 +30,7 @@ function openStore(filename){
       db.prepare('INSERT OR IGNORE INTO books VALUES(1,0,?)').run(JSON.stringify(empty));
       initializeWorker(db);
       initializeRecords(db);
+      initializeBranding(db);
       initializeBenefits(db);
       initializeIdentity(db);
       initializeAccess(db);

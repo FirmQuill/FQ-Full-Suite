@@ -1,6 +1,18 @@
 import {selfserviceContent,selfserviceSubmit} from './selfservice.mjs';
 const app = document.querySelector('#app');
 const notice = document.querySelector('#notice');
+const brand = document.querySelector('.brand'), brandName=brand.querySelector('span'), brandLogo=brand.querySelector('img'), favicon=document.querySelector('link[rel=icon]');
+function showBrand(value){
+  const name=value?.name||'FirmQuill', source=value?value.logo:'/shared/mark.svg';
+  brandName.textContent=name;
+  brandLogo.hidden=!source;
+  if(source){if(brandLogo.getAttribute('src')!==source)brandLogo.setAttribute('src',source);}
+  else brandLogo.removeAttribute('src');
+  const faviconUrl=source||'/shared/mark.svg';
+  if(favicon.getAttribute('href')!==faviconUrl){favicon.removeAttribute('type');favicon.setAttribute('href',faviconUrl);}
+  document.title=name+' · Employee portal';
+}
+brandLogo.addEventListener('error',()=>{brandLogo.hidden=true;});
 let session, busy = false, noticeTimer,tab='Home';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 function stamp(value, zone) {
@@ -12,6 +24,7 @@ function say(message) {
 }
 function login() {
   session = null;
+  showBrand(null);
   const setup=new URLSearchParams(location.hash.slice(1)).get('setup');
   if(setup){app.innerHTML='<section class="login"><h1>Set up your employee login</h1><form id="setup"><label>Choose your password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label><label>Confirm password<input type="password" name="confirm" minlength="12" autocomplete="new-password" required></label><p class="error" role="alert"></p><button class="primary">Activate my login</button></form></section>';return;}
   app.innerHTML = '<section class="login"><h1>Worker sign in</h1><p>Employee records and time clock</p><form id="login"><label>Username<input name="username" autocomplete="username" required></label><label>Password<input type="password" name="password" autocomplete="current-password" required></label><p class="error" role="alert"></p><button class="primary">Sign in</button></form><div id="federation"></div></section>';
@@ -39,6 +52,7 @@ function shiftCard(s) {
 }
 function render() {
   if(new URLSearchParams(location.hash.slice(1)).has('setup')){login();return;}
+  showBrand(session.branding);
   const d=session.data, open=d.openShift;
   const features=session.features||['Time','Pay','Reviews','Benefits','My Profile','Contacts'];
   if(tab!=='Home'&&!features.includes(tab))tab='Home';

@@ -22,6 +22,16 @@ Disabling ERP eligibility revokes linked ERP sessions without disabling the work
 
 The admin and worker portals remain separate origins. The worker application combines records and the time clock, with the clock at the top of each enabled section. No employee data is placed in public assets, browser storage, a service worker, or public file URLs. Responses use `Cache-Control: no-store`.
 
+## Brand the worker portal
+
+In the ERP, sign in as owner, select a company, then open **Employee records → Worker portal branding**. Choose one of these modes:
+
+- **FirmQuill default:** retain the original worker portal name and mark.
+- **This company:** use an optional display name (otherwise use the company’s name) and a PNG or JPEG logo.
+- **Parent company:** pick a company in the same workspace. Workers see that company’s own display name and logo, or its book name if a display name is not configured. Configure the parent’s logo on the parent’s own company record. This is a direct branding selection, not an ownership or financial relationship.
+
+Branding appears after sign-in in the header and browser tab. The shared login, ERP portal and publisher terms retain their original branding. Workers never choose or receive another company’s settings. Changes appear on sign-in or refresh. The uploaded logo is optional, capped at 512 KiB and 2048 × 2048, and stored only in the Full Suite database and whole-database backups, not Lite exports.
+
 ## Profiles, contacts, projects, reviews and paystubs
 
 **Employee records → Open record** manages department, title, location, hire date, employment status, direct supervisor, approved benefit groups and business contact assignments. Enter an effective date and reason for job/status/group changes. History retains previous and future values. Education and certifications have normal edit forms. **Assign projects** selects jobs from the existing project/job module and records start/end dates and role.

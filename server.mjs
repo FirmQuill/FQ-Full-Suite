@@ -6,6 +6,7 @@ import {inspectLite,exportLite,assertEmptyDestination} from './transfer.mjs';
 import {recordsView,recordsCommand,recordFile,employeeProfile} from './records.mjs';
 import {benefitsView,benefitsCommand,benefitFile,effectivePayrollDeductions} from './benefits.mjs';
 import {createIdentityService} from './identity.mjs';
+import {brandingSettings,saveWorkerBranding,workerBranding,workerBrandLogo} from './branding.mjs';
 import {accountAreas,requireArea,ERP_AREAS,saveAreas,WORKER_FEATURES,workerFeatures,requireWorkerFeature,workerRecords} from './access.mjs';
 
 const token=()=>randomBytes(32).toString('base64url');
@@ -45,7 +46,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     const {state,revision}=readBooks(db);
     const features=s.portal==='worker'?workerFeatures(db,user):[];
     const time=s.portal==='worker'?workerView(db,user,state):null;
-    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,recordsView(db,user,state)),benefits:features.includes('Benefits')?benefitsView(db,user,state):null}:
+    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,recordsView(db,user,state)),benefits:features.includes('Benefits')?benefitsView(db,user,state):null}:
       {user:{...publicUser(user),areas:accountAreas(db,user)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
   function portalServer(portal,publicOrigin){
@@ -120,6 +121,19 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(path==='/api/session'&&!post){send(res,200,snapshot(u,s));return;}
         if(path==='/api/logout'&&post){sessions.delete(sid);setCookie('',0);send(res,200,{ok:true});return;}
         const {state:workforceState}=readBooks(db),scope={companyId:url.searchParams.get('companyId')||undefined,employeeId:url.searchParams.get('employeeId')||undefined};
+        if(portal==='worker'&&path==='/api/worker-brand/logo'&&!post){
+          const logo=workerBrandLogo(db,workforceState,u.assignments[0]);
+          requireThat(logo,404,'Company logo unavailable.');
+          res.writeHead(200,{'Content-Type':logo.mime});res.end(logo.bytes);return;
+        }
+        if(portal==='main'&&path==='/api/worker-brand'){
+          owner(u);
+          if(!post){send(res,200,brandingSettings(db,workforceState,scope.companyId));return;}
+          const p=await jsonBody(req,720*1024);
+          const result=tx(db,()=>{const active=userFor(s,portal);owner(active);const result=saveWorkerBranding(db,readBooks(db).state,p);
+            audit(db,active,p.companyId,'worker portal branding updated',JSON.stringify({mode:result.mode,parent:result.parent,hasLogo:result.hasLogo}));return result;});
+          send(res,200,result);return;
+        }
         if(path==='/api/records'&&!post){if(portal==='main')requireArea(db,u,'Employee records');const r=recordsView(db,u,workforceState,scope);send(res,200,portal==='worker'?workerRecords(db,u,r):r);return;}
         if(path==='/api/benefits'&&!post){if(portal==='main')requireArea(db,u,'Benefits administration');else requireWorkerFeature(db,u,'Benefits');send(res,200,benefitsView(db,u,workforceState,scope));return;}
         if(path.startsWith('/api/records/file/')&&!post){if(portal==='main')requireArea(db,u,'Employee records');else requireWorkerFeature(db,u,'Pay');const f=recordFile(db,u,workforceState,decodeURIComponent(path.slice(18)));res.writeHead(200,{'Content-Type':f.mime,'Content-Disposition':'attachment; filename="'+f.filename.replace(/[^a-zA-Z0-9._-]/g,'_')+'"'});res.end(f.bytes);return;}

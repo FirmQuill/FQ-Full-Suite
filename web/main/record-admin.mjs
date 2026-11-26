@@ -30,7 +30,7 @@ export function recordsContent(raw,session,companyId){
   const paystubs=table(['Employee','Pay date','Period','Source',''],(data.paystubs||[]).map(p=>[
     esc(employeeName(data,p.employeeId)),esc(p.payDate),esc(p.periodStart+' – '+p.periodEnd),esc(p.source),`<a href="/api/records/file/${encodeURIComponent(p.id)}" target="_blank" rel="noopener">Download finalized PDF</a>`
   ]),'No finalized paystubs have been published in your scope.');
-  return panel('Employee records',roster,canHR(session)?btn('employee','Add employee','','primary')+btn('record-contacts','Contacts & field rules',companyId):'')+
+  return panel('Employee records',roster,canHR(session)?btn('employee','Add employee','','primary')+btn('record-contacts','Contacts & field rules',companyId)+(session.user.role==='owner'?btn('record-branding','Worker portal branding',companyId):''):'')+
     panel('Performance reviews',reviews)+panel('Profile corrections',corrections)+
     (['owner','payroll'].includes(session.user.role)?panel('Published paystubs',paystubs):'');
 }
@@ -146,6 +146,30 @@ async function contactSettings(ctx,companyId){
   });
 }
 
+async function workerBranding(ctx,companyId){
+  const data=await ctx.api('worker-brand?companyId='+encodeURIComponent(companyId));
+  const fields='<p>Change the name and logo workers see after signing in. Signed-out screens and publisher terms keep their existing identity.</p>'+
+    choice('mode','Display branding',[['default','FirmQuill default'],['company','This company'],['parent','Parent company']],data.mode)+
+    field('label','This company’s display name (optional)',data.label,'text','maxlength="160" placeholder="'+esc(data.companyName)+'"')+
+    choice('parent','Parent company (only used in Parent company mode)',[['','Choose a parent'],...data.parents.map(p=>[p.id,p.name])],data.parent)+
+    '<p>For parent branding, set the parent’s own display name and logo on its company record. Workers see only the resolved brand.</p>'+
+    '<label>Upload a PNG or JPEG logo (up to 512 KiB; 2048 × 2048 max)<input name="file" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></label>'+
+    (data.hasLogo?'<label class="checkfield"><input type="checkbox" name="remove">Remove the saved custom logo</label>':'');
+  ctx.formModal('Worker portal branding',fields,'Save branding',async v=>{
+    let logoAction=v.remove==='on'?'remove':'keep',logo;
+    if(v.file?.size){
+      if(v.remove==='on')throw Error('Choose either a new logo or removal.');
+      if(v.file.size>512*1024)throw Error('Choose a logo no larger than 512 KiB.');
+      const bytes=new Uint8Array(await v.file.arrayBuffer());let raw='';
+      for(let i=0;i<bytes.length;i+=8192)raw+=String.fromCharCode(...bytes.subarray(i,i+8192));
+      const mime=v.file.type||(/\.png$/i.test(v.file.name)?'image/png':'image/jpeg');
+      logoAction='replace';logo={mime,data:btoa(raw)};
+    }
+    await ctx.api('worker-brand',{companyId,version:data.version,mode:v.mode,label:v.label,parent:v.parent,logoAction,logo});
+    ctx.closeModal();await ctx.refresh();ctx.toast('Worker portal branding saved.');
+  });
+}
+
 export async function recordsAction(type,key,ctx){
   if(!type.startsWith('record-'))return false;
   if(type==='record-detail')details(await selected(ctx,key),ctx);
@@ -157,6 +181,7 @@ export async function recordsAction(type,key,ctx){
   else if(type==='record-stub-upload')await uploadStub(ctx,key);
   else if(type==='record-correction')await correction(ctx,key);
   else if(type==='record-contacts')await contactSettings(ctx,key);
+  else if(type==='record-branding')await workerBranding(ctx,key);
   else return false;
   return true;
 }
