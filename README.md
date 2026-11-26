@@ -1,52 +1,15 @@
 # FirmQuill Full Suite
-**Employee Records and Self-Service preview 0.2.0 · November 26, 2026**
 
-This upgrade combines employee records and timekeeping in one worker app. Every existing and newly added employee receives a worker account automatically, without a default password. Owners send a single-use setup invitation from **User access** and choose each employee's enabled portal features. ERP access is separately enabled, uses a separate account and password, and is limited by approved areas plus the account's duty role. Worker provisioning never grants ERP access.
+Version **0.3.0-preview.1** · self-hosted Windows/Node 24 preview
 
-The worker app includes Home, Time, Pay, Reviews, Benefits, My Profile and Contacts. It supports separate initial/open/special enrollment records, receipts, HR routing and retirement contribution requests. Payroll can publish real finalized PDF stubs. Directory provisioning, OIDC federation and company-scoped SCIM are optional. Local login and timekeeping work without them.
+Read the illustrated, searchable [public setup guide](SETUP-GUIDE.html), or its [Markdown source](SETUP-GUIDE.md), to install, create the first administrator, initialize empty books or an approved company package, verify setup and diagnose setup failures.
 
-Read **EMPLOYEE-SETUP.md** for onboarding, feature flags, ERP permissions, connectors, benefits and the fictional demo. Schema 1 databases migrate transactionally to schema 2 on first open; existing books, employee IDs, passwords and time records are retained. Keep a pre-upgrade backup. New sensitive records stay in the Full database and do not enter Lite snapshots. Nothing is published by this release.
+For a fresh workspace, run `node host.mjs configure` from the extracted application folder and use the private loopback link printed by the host. After setup, run `node host.mjs start`. The existing **Start FirmQuill Full.cmd** launcher and terminal owner setup continue to work. Existing workspaces are never initialized again. The default database remains in the sibling `FirmQuill-data` folder; set `FIRMQUILL_DB` to an absolute path outside the program folder when needed.
 
-The company-hosted edition runs two sites from one local process and shares business records through SQLite. The books portal has company assignments, individual accounts, approval queues, audit history and encrypted Lite transfers. The worker portal handles clock-in, clock-out, personal timesheets and corrections. Both sites require the host to be running.
+Default local portals are http://127.0.0.1:4179/ (books) and http://127.0.0.1:4180/ (employee). Keep the host running. All workflows work without an AI account. Optional customer-selected agents receive only deliberately granted company/type fields and submit proposed additions for owner approval. Default **Setup help** searches only the public setup guide and has no company-data access.
 
-## Start on this Windows laptop
+The reusable full customer manual is delivered separately for migration or support customers. It is absent from this checkout, public help and the standard runtime package. Company-specific migration packages and handoffs are separate private data; never add them to this repository or download.
 
-1. Extract the entire ZIP. Double-click **Start FirmQuill Full.cmd**. The launcher uses this laptop’s installed Node runtime. For another host, install Node 24.22.3 (the tested runtime) and run `node host.mjs start` from the extracted directory. Runtime dependencies are included in Node.
-2. On first start, enter an owner username, display name and a password of at least 12 characters at the terminal. Password entry is hidden. The package contains no preset logins or business data.
-3. Open **http://127.0.0.1:4179/** for the books. For an existing Lite vault, use **Import from Lite** while the workspace is empty. Alternatively select **Create company**. The owner chooses between these paths. An existing company prevents a later whole-vault import into that database.
-4. Create employees under **Employee records** (or **Jobs & time**) and jobs under **Jobs & time**. In **User access**, select **Worker setup invite** for an employee, choose a username and give the single-use link privately to that person. Use **Portal features** to enable sections. For ERP, enable **ERP permissions**, select allowed areas, then send a **Separate ERP invite** with the required role and a subset of those areas. Employees choose their own separate passwords.
-5. Open **http://127.0.0.1:4180/** for workers. The worker signs in, chooses a company job and clocks in. Clock out submits the shift for review. On the main site the assigned manager opens **Approvals**, reviews the punches and approves or rejects. Use **Refresh** in an already open tab to see changes.
-6. Stop the process with Ctrl+C in the launcher. Restarting preserves books and accounts. Each user signs in again.
+Generic migration mappings and fictional fixtures do not establish native QuickBooks, Wave or ADP export-schema compatibility. The existing verified bank templates are retained. Final payroll and tax filing remain outside this preview's verified scope. FirmQuill Lite and payroll research are unchanged.
 
-By default the database is **FirmQuill-data/books.sqlite**, in a sibling directory next to the extracted application folder. The launcher creates that directory on first use. To choose an existing protected data directory set FIRMQUILL_DB to an absolute file path before starting. The host refuses a database path inside its program folder.
-
-## Roles and access
-
-| Account | Available work |
-|---|---|
-| Owner | All companies, individual user administration, group definitions, intercompany charges, approvals, audit, encrypted import and export |
-| Manager | Read and post directly to assigned books, maintain company settings, close periods, review financial and worker submissions, view assigned-company audit |
-| Bookkeeper | Work within assigned books. Directory records, jobs, time, quotes, sales orders, purchase orders and attachments save directly. Financial postings and other controlled operations enter the approval queue. |
-| Viewer | Read assigned books, reports and available document exports |
-| HR | Assigned-company employee profiles, permitted reviews, benefits configuration and assigned special enrollment cases; no paystub files |
-| Payroll | Assigned-company finalized paystub publishing, employer plan review/export and confirmed deduction instructions; no special-enrollment evidence |
-| Worker | Combined employee app, enabled sections only; own punches, time, published paystubs/reviews, profile, benefits and business contacts |
-
-A manager’s decision revalidates the pending financial operation against the current books. Closed periods, insufficient stock and invalid balances still block posting. A revision conflict asks the user to refresh and review the latest state before entering or approving the change. Stable request IDs and a transaction covering books, approval, deduplication and audit protect against a repeated financial posting. The audit screen displays the latest 500 visible events. The SQLite audit table retains older events. A host administrator with filesystem access can alter the database. The audit is an application record, without independent attestation.
-
-Workers can propose corrected intervals with a reason. Managers see the original and proposed times. Approving a correction replaces the effective approved minutes, preserves the original punches and prior values, and feeds the same approved-time rows used by the inherited federal payroll worksheet. The host records the worker timezone with each shift. It allocates elapsed whole minutes across local dates, including tested daylight-saving transitions. Approved intervals range from one minute through 24 hours. Shorter or longer recorded shifts require correction. Use synthetic time for evaluation. Payroll rules for rounding, overtime, breaks and multi-jurisdiction allocation remain open.
-
-Disable a worker account to revoke its active sessions. An open punch stays attached to its original login. To complete it, re-enable that identity, record clock-out, request any necessary correction, and have a manager review it. Company and employee reassignment is blocked while a shift is open. Disabling **Time** is blocked while the employee has an open shift. Disabling ERP leaves the worker account intact. Effective employment deactivation denies both logins and retains all history. Rehires retain their original employee identity; ERP access still requires owner approval.
-
-## Hosting, updates and recovery
-
-See **OPERATIONS.md** for host installation, secure origins, parameters, backup, recovery and updates. See **TRANSFERS.md** for Lite migration and returning an encrypted snapshot to Lite. A disaster-recovery backup includes accounts and worker history. A Lite snapshot contains the portable books and approved time.
-
-## Exact Lite baseline and readiness
-
-Full Suite was built after delivery of **FirmQuill ERP Lite 0.1.0-preview.2**. Its ZIP SHA-256 is `17b21ad3e63ea4cd4e9072baf8a346eccb8ef235763b5ed2977dea1131e10bf3`. Every file in `shared/` came from the delivered ZIP’s dist directory. The test suite verifies all these bytes against the Lite manifest. The main and worker interfaces are under `web/`. Server operations invoke the same portable accounting, time validation, reconciliation and reporting rules as Lite.
-
-**This is a preview for synthetic books.** Verified federal worksheet components are available. Final payroll, tax forms, approved gross-to-net posting, bank-file generation and independent payroll review are outstanding. Final state-level payroll coverage is 0/51. The Lite limits for sales, asset and stock workflows, vendor-file coverage, consolidation and physical-device testing are inherited. Refer to `baseline/RELEASE.md`, `baseline/PAYROLL-COVERAGE.md` and `baseline/INTEROPERABILITY.md` for details. The user authorized the preview as a development baseline. **TEST-RESULTS.md** reports the Full Suite evidence.
-
-This handoff includes the runnable code and test sources. No external account, deployment or hosted service was created.
-
+First-party source is under [MIT](LICENSE); see [component notices](THIRD-PARTY-NOTICES.md). Agreement acceptance remains separate from the source license. Source tests and release builder are included for local verification; see [test results](TEST-RESULTS.md). The public runtime ZIP is built from an explicit allowlist and contains only runtime files, licenses and public setup help.

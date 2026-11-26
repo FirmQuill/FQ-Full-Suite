@@ -1,4 +1,3 @@
-import {acceptIfRequired} from './agreement-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
@@ -8,6 +7,7 @@ import {createRequire} from 'node:module';
 import {newVault,apply} from '../shared/core.mjs';
 import {openStore,tx,saveBooks,putUser,passwordHash} from '../store.mjs';
 import {createSuite} from '../server.mjs';
+import {seedFixtureTerms,acceptFixtureBrowser} from './fixture-terms.mjs';
 
 const browserExe=process.env.FIRMQUILL_BROWSER_EXE||process.env.ERP_LITE_BROWSER_EXE;
 if(browserExe)test('employee records admin forms publish reviews and real stub PDFs and preserve effective profile records',async t=>{
@@ -19,7 +19,7 @@ if(browserExe)test('employee records admin forms publish reviews and real stub P
   state=apply(state,company,{type:'time',employee:state.companies[0].employees[0].id,job:state.companies[0].jobs[0].id,minutes:60,date:'2026-01-02'});
   state=apply(state,company,{type:'approve time',time:state.companies[0].time[0].id,date:'2026-01-03'});
   const employee=state.companies[0].employees[0].id,key=company+'|'+employee,db=openStore(database),hash=await passwordHash(password);
-  try{tx(db,()=>{saveBooks(db,state);putUser(db,null,{username:'fictional-owner',name:'Fictional Browser Owner',role:'owner',assignments:[]},hash,{bootstrap:true});});}finally{db.close();}
+  try{tx(db,()=>{saveBooks(db,state);putUser(db,null,{username:'fictional-owner',name:'Fictional Browser Owner',role:'owner',assignments:[]},hash,{bootstrap:true});});seedFixtureTerms(db);}finally{db.close();}
   let browser,suite;
   try{
     suite=await createSuite({database,mainPort:0,workerPort:0});
@@ -29,7 +29,7 @@ if(browserExe)test('employee records admin forms publish reviews and real stub P
     const click=(action,keyValue)=>page.locator(`[data-act="${action}"]${keyValue?`[data-key="${keyValue}"]`:''}`).first().click();
     const submit=()=>modal().locator('button[type=submit]').click();
     const waitClosed=()=>page.locator('dialog[open]').waitFor({state:'hidden'});
-    await page.goto(suite.mainUrl);await page.locator('#login [name=username]').fill('fictional-owner');await page.locator('#login [name=password]').fill(password);await page.locator('#login button').click();await acceptIfRequired(page);await page.locator('.toolbar').waitFor();
+    await page.goto(suite.mainUrl);await page.locator('#login [name=username]').fill('fictional-owner');await page.locator('#login [name=password]').fill(password);await page.locator('#login button').click();await page.locator('.toolbar').waitFor();
     await click('nav','Employee records');await page.getByRole('heading',{name:'Employee records',exact:true,level:2}).waitFor();
     await click('record-contacts',company);await modal().locator('[name=contactName0]').fill('Fictional HR Contact');await modal().locator('[name=contactEmail0]').fill('hr@example.invalid');await modal().locator('[name=contactPhone0]').fill('555-0101');
     await modal().locator('[name=contactName1]').fill('Fictional Payroll Contact');await modal().locator('[name=contactEmail1]').fill('payroll@example.invalid');await modal().locator('[name=hrContact]').selectOption('0');await modal().locator('[name=payrollContact]').selectOption('1');await submit();await waitClosed();
@@ -48,7 +48,7 @@ if(browserExe)test('employee records admin forms publish reviews and real stub P
       const response=await fetch('/api/admin/user',{method:'POST',headers:{'Content-Type':'application/json','X-CSRF-Token':session.csrf},body:JSON.stringify({username:'fictional-time-manager',name:'Fictional Time Manager',role:'manager',assignments:[company],employeeId:'',active:true,password,areas:['Jobs & time']})});return response.status;
     },{company,password});assert.equal(created,200);
     const restrictedContext=await browser.newContext(),restricted=await restrictedContext.newPage();restricted.on('pageerror',e=>errors.push(e.message));
-    await restricted.goto(suite.mainUrl);await restricted.locator('#login [name=username]').fill('fictional-time-manager');await restricted.locator('#login [name=password]').fill(password);await restricted.locator('#login button').click();await acceptIfRequired(restricted);await restricted.getByRole('heading',{name:'Jobs',exact:true,level:2}).waitFor();
+    await restricted.goto(suite.mainUrl);await restricted.locator('#login [name=username]').fill('fictional-time-manager');await restricted.locator('#login [name=password]').fill(password);await restricted.locator('#login button').click();await acceptFixtureBrowser(restricted);await restricted.getByRole('heading',{name:'Jobs',exact:true,level:2}).waitFor();
     const work=await restricted.locator('.workspace').innerText();assert.match(work,/Fictional Warehouse Project/);assert.match(work,/Fictional Browser Worker/);assert.ok(!work.includes('$25.00'));assert.ok(!/Hourly|Rate|Labor cost|undefined|NaN/.test(work));
     const projected=await restricted.evaluate(()=>fetch('/api/session',{cache:'no-store'}).then(r=>r.json()));assert.ok(!Object.hasOwn(projected.state.companies[0].employees[0],'rate'));assert.ok(!Object.hasOwn(projected.state.companies[0].time[0],'cost'));assert.ok(!Object.hasOwn(projected.state.companies[0].time[0],'rate'));assert.ok(!JSON.stringify(projected.state.companies[0].history).includes('"rate"'));
     assert.deepEqual(errors,[]);t.diagnostic('Microsoft Edge '+browser.version()+'; actual admin forms, SQLite and authenticated PDF download.');

@@ -1,0 +1,61 @@
+import {esc,btn,table,panel,input,select,choices,mapping} from '/shared/views.mjs';
+
+const detail=value=>`<pre>${esc(JSON.stringify(value,null,2))}</pre>`;
+const optionalInput=(...args)=>input(...args).replace(' required>','>');
+export function connectedContent(page,data,session){
+  if(page==='Setup help')return data?.error?panel('Support documentation unavailable',`<p>${esc(data.error)}</p><p>The application remains available. Contact your host administrator.</p>`):data?.scope==='private-customer-manual'?panel('Privately supplied customer manual','<p>Your host explicitly selected this separate customer manual for support. Search retrieves documentation only and cannot read company records.</p>',btn('support-search','Search supplied manual')+btn('support-ask','Ask documentation assistant')):panel('Public setup guide','<p>Search installation, first administrator, empty or package setup, verification and setup recovery. The default assistant uses only the public setup guide. It cannot read company records. Your privately supplied customer manual is separate.</p>',btn('support-search','Search setup guide')+btn('support-ask','Ask setup assistant'));
+  if(!data)return '<p>Loading…</p>';
+  if(data.error)return `<p class="error">${esc(data.error)}</p>`;
+  if(page==='Migration workspace')return panel('Prepare a company package','<p>Stage exports from several sources, map fields, review errors and reconcile before approving. Staging leaves the current books unchanged. Use fictional files for evaluation. Raw exports stay in your own protected folder. No data is sent to an AI service.</p>',btn('migration-create','New migration','','primary'))+
+    panel('Company migrations',table(['Company','Migration ID','Actions'],(data.runs||[]).map(r=>[esc(r.company?.name||r.companyName||r.name),esc(r.id||r.runId),btn('migration-stage','Map CSV',r.id||r.runId)+btn('migration-expectations','Set control balances',r.id||r.runId)+btn('migration-preview','Preview / reconcile',r.id||r.runId)+btn('migration-package','Build approved package',r.id||r.runId)]),'No staged migrations.'))+
+    panel('Available formats',detail(data.coverage||{}))+
+    panel('Reusable mapping profiles',detail(data.profiles||[]));
+  if(page==='Agent access')return panel('Optional customer agent access','<p>Choose a compatible local or cloud agent and explicitly grant a company and record types. A cloud agent receives the scoped fields it requests. Contacts may contain identifying business information. Only grant data you have consent to share. Payroll, personnel, paystubs, benefits, attachments, banking and journals are unavailable. Proposed additions require approval here.</p>',btn('agent-grant','Grant agent access','','primary'))+
+    panel('Grants',table(['Agent','Company','Types','Status',''],(data.grants||[]).map(g=>[esc(g.name),esc(session.state.companies.find(c=>c.id===(g.companyId||g.company))?.name||g.companyId||g.company),esc((g.recordTypes||[]).join(', ')),g.revoked?'Revoked':'Active',btn('agent-revoke','Revoke',g.id)]),'No agent grants.'))+
+    panel('Proposed additions',table(['Company','Proposal','Status',''],(data.proposals||[]).map(p=>[esc(p.companyId||p.company),esc(p.id),esc(p.status),btn('agent-review','Review',p.id)]),'No proposals.'));
+  return '';
+}
+function display(ctx,title,value){ctx.formModal(title,detail(value),'',null);}
+export async function connectedAction(type,key,ctx){
+  const {api,formModal,closeModal,refresh,toast,auxiliary,session,download}=ctx;
+  switch(type){
+    case 'migration-create':formModal('New company migration',input('companyName','Company name','text','','maxlength="160"'),'Create staging workspace',async v=>{await api('migration',{type:'create',companyName:v.companyName});closeModal();await refresh();toast('Migration staging created.');});return true;
+    case 'migration-stage':{
+      const fields=auxiliary.fields||{};
+      formModal('Choose records to map',select('recordType','Record type',Object.keys(fields).map(k=>[k,k])),'Continue',async v=>{
+        const recordType=v.recordType,definition=fields[recordType],names=Array.isArray(definition)?definition:Object.keys(definition||{});
+        formModal('Map '+recordType+' CSV',input('sourceId','Stable source namespace (reuse for the same source)','text','','maxlength="80"')+input('product','Source product and edition')+input('exportedAt','Export date','date',new Date().toISOString().slice(0,10))+optionalInput('profileName','Save mapping profile as (optional)','text','','maxlength="80"')+'<label>Saved profile<select name="profile"><option value="">Manual mapping</option>'+(auxiliary.profiles||[]).filter(p=>p.recordType===recordType).map(p=>`<option value="${esc(p.name)}">${esc(p.name)}</option>`).join('')+'</select></label><label>CSV export<input type="file" name="file" accept=".csv,text/csv" required></label><p>Enter the exact CSV header for each canonical field. Leave unused optional fields empty. Dates use YYYY-MM-DD; amounts are whole integer cents (100 = $1.00) unless you explicitly choose a transform. Source identifiers must remain stable across repeats.</p>'+names.map(name=>optionalInput('map-'+name,name+' header','text','','maxlength="160"')+`<label>${esc(name)} transform<select name="transform-${esc(name)}"><option value="">As supplied</option>${['decimalDollars','integerCents','isoDate','MM/DD/YYYY','DD/MM/YYYY','text'].map(t=>`<option>${esc(t)}</option>`).join('')}</select></label>`).join('')+'<label><input type="checkbox" name="fictional" checked> This is a fictional fixture (uncheck for real local exports)</label>','Stage mapped rows',async(values,form)=>{
+          const file=form.get('file');if(!file?.size||file.size>2*1024*1024)throw Error('Choose a CSV no larger than 2 MiB.');
+          const profile=(auxiliary.profiles||[]).find?.(p=>p.name===values.profile&&p.recordType===recordType);
+          const mapping=profile?.mapping||Object.fromEntries(names.filter(name=>values['map-'+name]).map(name=>[name,values['transform-'+name]?{column:values['map-'+name],transform:values['transform-'+name]}:values['map-'+name]]));
+          if(values.profileName)await api('migration',{type:'profile',name:values.profileName,recordType,mapping});
+          const result=await api('migration',{type:'stage',runId:key,source:{id:values.sourceId,product:values.product,edition:values.product,exportedAt:values.exportedAt,fixtureOnly:form.has('fictional')},recordType,csv:await file.text(),mapping,profileName:values.profileName||values.profile||undefined});
+          closeModal();await refresh();display(ctx,'Staging result',result);
+        });
+      });return true;
+    }
+    case 'migration-preview':{
+      const preview=await api('migration',{type:'preview',runId:key});
+      formModal('Reconcile migration preview',detail(preview)+(preview.unresolved||[]).filter(r=>r.status!=='excluded').map(r=>`<p>${esc(r.status)} · line ${esc(r.line)} ${btn('migration-exclude','Exclude this source row',[key,r.batchId,r.line].join('|'))}</p>`).join('')+'<label><input type="checkbox" name="accept" required> I reviewed counts, balances and every unresolved item. Approve this staged version.</label>','Approve staged version',async()=>{await api('migration',{type:'approve',runId:key,previewDigest:preview.previewDigest||preview.digest,acceptExceptions:true});closeModal();await refresh();toast('Staged records approved for packaging.');});return true;
+    }
+    case 'migration-exclude':{const [runId,batchId,line]=key.split('|');await api('migration',{type:'exclude',runId,items:[{batchId,line:Number(line)}]});closeModal();await refresh();toast('Row excluded. Preview and approve the revised scope.');return true;}
+    case 'migration-expectations':formModal('Independent control balances','<p>Enter independently checked closing balances as JSON: account code to signed integer cents, for example {"1000":52000,"1100":10000,"2000":-3000}. An empty object provides no independent comparison.</p><label>Expected balances<textarea name="balances" required>{}</textarea></label>','Save control balances',async v=>{let balances;try{balances=JSON.parse(v.balances);}catch{throw Error('Enter valid JSON control balances.');}await api('migration',{type:'expectations',runId:key,balances});closeModal();await refresh();toast('Control balances set. Reconcile again.');});return true;
+    case 'migration-package':{
+      const preview=await api('migration',{type:'preview',runId:key});
+      const result=await api('migration',{type:'package',runId:key,approvedDigest:preview.previewDigest||preview.digest});
+      download(result.packageText,result.filename,'application/json');toast('Private company package downloaded. Keep it outside the application folder.');return true;
+    }
+    case 'agent-grant':formModal('Grant customer-selected agent access',input('name','Agent label')+select('companyId','Company',mapping(session.state.companies))+`<fieldset><legend>Record types</legend>${choices('recordTypes',['contacts','items','invoices','bills'].map(k=>[k,k]),['contacts'])}</fieldset><label><input name="allowProposals" type="checkbox"> Allow proposed contact and item additions for my approval</label><label><input name="consent" type="checkbox" required> I authorize this agent to receive the selected company data, including any cloud processing I configure.</label>`,'Create grant',async(v,f)=>{const result=await api('agent-admin/action',{type:'grant',name:v.name,companyId:v.companyId,recordTypes:f.getAll('recordTypes'),allowProposals:f.has('allowProposals')});closeModal();await refresh();display(ctx,'Save this token privately (shown once)',result);});return true;
+    case 'agent-revoke':formModal('Revoke agent access','<p>Revocation stops reads and new proposals immediately. Pending proposals cannot be approved under a revoked grant.</p>','Revoke grant',async()=>{await api('agent-admin/action',{type:'revoke',id:key});closeModal();await refresh();toast('Agent grant revoked.');});return true;
+    case 'agent-review':{
+      const p=(auxiliary.proposals||[]).find(p=>p.id===key);
+      formModal('Review proposed addition',detail(p)+select('decision','Decision',[['reject','Reject'],['approve','Approve']]),'Record decision',async v=>{await api('agent-admin/action',{type:'decide',id:key,decision:v.decision,revision:session.revision});closeModal();await refresh();toast('Proposal decision recorded.');});return true;
+    }
+    case 'support-search':case 'support-ask':formModal(auxiliary?.scope==='private-customer-manual'?'Search privately supplied customer manual':type==='support-search'?'Search public setup guide':'Ask setup assistant',input('question',auxiliary?.scope==='private-customer-manual'?'Documentation question':'Setup question','text','','maxlength="1500"'),'Search',async v=>{
+      const result=type==='support-search'?await api('support/search?q='+encodeURIComponent(v.question)):await api('support/answer',{question:v.question});
+      formModal(auxiliary?.scope==='private-customer-manual'?'Private manual guidance':'Public setup guidance',`<p>Installed version ${esc(result.version)}</p>${result.answer?`<p class="request-detail">${esc(result.answer)}</p>`:''}`+(result.citations||result.results||[]).map(c=>`<p>${btn('support-article',c.title,c.id)}<br><small>${esc(c.version)} · ${esc(c.section||c.snippet||'')}</small></p>`).join('')+`<p>${esc(result.escalation?.message||'Contact your designated support contact if this guidance does not resolve the problem.')}</p>`,'',null);
+    });return true;
+    case 'support-article':{const article=await api('support/article?id='+encodeURIComponent(key));formModal(article.title,`<p>Article ${esc(article.id)} · installed version ${esc(article.version)}</p><pre>${esc(article.body)}</pre>`,'',null);return true;}
+    default:return false;
+  }
+}

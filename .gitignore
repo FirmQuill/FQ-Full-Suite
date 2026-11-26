@@ -1,0 +1,20 @@
+# Company data, raw exports, private manuals and credentials never belong in this checkout.
+*.sqlite
+*.sqlite-*
+*.db
+*.db-*
+*.fqdb
+*.fqsetup.json
+*.partial
+.env
+.env.*
+*connector-key*
+FirmQuill-data/
+FirmQuill-setup/
+raw-exports/
+customer-packages/
+private-manual/
+private-kb/
+FirmQuill-Customer-Manual/
+support-private/
+node_modules/

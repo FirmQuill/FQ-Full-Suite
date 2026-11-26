@@ -1,4 +1,3 @@
-import {receipt} from './agreement-fixture.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {mkdtemp,rm,readFile} from 'node:fs/promises';
@@ -11,6 +10,7 @@ import {sampleVault} from '../shared/sample.mjs';
 import {statements,consolidate} from '../shared/core.mjs';
 import {ficaPreview,payrollGate,states} from '../shared/payroll-rules.mjs';
 import {backupDatabase,restoreDatabase} from '../recovery.mjs';
+import {fixtureAgreement} from './fixture-terms.mjs';
 
 const pw='Synthetic fixture access, only.';
 async function client(url,username){
@@ -19,9 +19,8 @@ async function client(url,username){
     const res=await fetch(url+'/api/'+path,{method:data===undefined?'GET':'POST',headers:{Origin:url,Cookie:session.cookie,'X-CSRF-Token':session.csrf,'Content-Type':'application/json',...headers},body:data===undefined?undefined:JSON.stringify(data)});
     return {status:res.status,data:await res.json(),headers:res.headers};
   }
-  let login=await request('login',{username,password:pw});
-  if(login.status===200){session.cookie=login.headers.get('set-cookie').split(';')[0];session.csrf=login.data.csrf;}
-  if(login.data.termsRequired)login=await request('terms',receipt);
+  const login=await request('login',{username,password:pw});
+  if(login.status===200){session.cookie=login.headers.get('set-cookie').split(';')[0];session.csrf=login.data.csrf;if(login.data.termsRequired){const accepted=await request('terms',fixtureAgreement);assert.equal(accepted.status,200);login.data=accepted.data;}}
   return {login,request};
 }
 async function fixture(t){

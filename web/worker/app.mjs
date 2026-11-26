@@ -5,16 +5,13 @@ const notice = document.querySelector('#notice');
 const brand = document.querySelector('.brand'), brandName=brand.querySelector('span'), brandLogo=brand.querySelector('img'), favicon=document.querySelector('link[rel=icon]');
 function showBrand(value){
   const name=value?.name||'FirmQuill', source=value?value.logo:'/shared/mark.svg';
-  brandName.textContent=name;
-  brandLogo.hidden=!source;
-  if(source){if(brandLogo.getAttribute('src')!==source)brandLogo.setAttribute('src',source);}
-  else brandLogo.removeAttribute('src');
-  const faviconUrl=source||'/shared/mark.svg';
-  if(favicon.getAttribute('href')!==faviconUrl){favicon.removeAttribute('type');favicon.setAttribute('href',faviconUrl);}
+  brandName.textContent=name;brandLogo.hidden=!source;
+  if(source){if(brandLogo.getAttribute('src')!==source)brandLogo.setAttribute('src',source);}else brandLogo.removeAttribute('src');
+  const faviconUrl=source||'/shared/mark.svg';if(favicon.getAttribute('href')!==faviconUrl){favicon.removeAttribute('type');favicon.setAttribute('href',faviconUrl);}
   document.title=name+' · Employee portal';
 }
 brandLogo.addEventListener('error',()=>{brandLogo.hidden=true;});
-let session, busy = false, noticeTimer,tab='Home';
+let session, busy = false, noticeTimer,tab='Home',supportScope='public-setup-only';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 function stamp(value, zone) {
   return new Intl.DateTimeFormat('en-US', {timeZone:zone, month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', timeZoneName:'short'}).format(new Date(value));
@@ -52,16 +49,19 @@ function shiftCard(s) {
   return `<article class="shift"><div class="row"><h3>${esc(s.job)}</h3><span class="tag">${s.approvedStart?'Approved time recorded':s.reviews.some(r=>r.status==='pending')?'Awaiting review':'Review complete'}</span></div><p>Original punches · ${esc(stamp(s.start,s.zone))} – ${esc(stamp(s.end,s.zone))}</p>${s.approvedStart?'<p>Approved interval · '+esc(stamp(s.approvedStart,s.zone))+' – '+esc(stamp(s.approvedEnd,s.zone))+'</p>':''}<details><summary>Review history</summary><ul>${history}</ul></details>${pending?'<p class="muted">Correction awaiting manager review.</p>':`<details><summary>Request correction</summary><form data-correction="${esc(s.id)}"><p class="muted">Enter both timestamps in UTC with Z or include a numeric time-zone offset.</p><div class="form-grid"><label>Requested start<input name="start" value="${esc(s.approvedStart||s.start)}" required></label><label>Requested end<input name="end" value="${esc(s.approvedEnd||s.end)}" required></label><label class="wide">Reason<textarea name="reason" maxlength="300" required></textarea></label></div><p class="error" role="alert"></p><button>Send correction</button></form></details>`}</article>`;
 }
 function render() {
+  if(session)showBrand(session.branding);
   if(new URLSearchParams(location.hash.slice(1)).has('setup')){login();return;}
-  showBrand(session.branding);
   const d=session.data, open=d.openShift;
   const features=session.features||['Time','Pay','Reviews','Benefits','My Profile','Contacts'];
-  if(tab!=='Home'&&!features.includes(tab))tab='Home';
+  if(!['Home','Setup help'].includes(tab)&&!features.includes(tab))tab='Home';
   const punch = open ? `<p>${esc(open.job)} · Started ${esc(stamp(open.start, open.zone))}</p><form id="clock-out"><p class="error" role="alert"></p><button class="primary">Clock out</button></form>` :
     d.jobs?.length ? `<form id="clock-in"><label>Job<select name="jobId" required>${d.jobs.map(j=>'<option value="'+esc(j.id)+'">'+esc(j.name)+'</option>').join('')}</select></label><p class="error" role="alert"></p><button class="primary">Clock in</button></form>` : '<p>Ask a manager to create a job before clocking in.</p>';
   const rows=(d.time||[]).slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>`<tr><td>${esc(t.date)}</td><td>${esc(t.job)}</td><td>${esc(t.minutes)}</td><td>${t.approved?'Approved':'Pending'}</td></tr>`).join('');
   const times=`<section class="card"><h2>My shifts</h2>${(d.shifts||[]).filter(s=>s.end).map(shiftCard).join('')||'<p class="muted">Completed shifts appear here.</p>'}</section><section class="card"><h2>My time entries</h2>${rows?'<div class="records"><table><thead><tr><th>Work date</th><th>Job</th><th>Minutes</th><th>Review</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<p class="muted">No time entries recorded.</p>'}</section>`;
-  app.innerHTML = `<div class="bar"><div><p class="muted">${esc(d.company)}</p><h1>${esc(d.employee)}</h1></div><div class="row"><button id="refresh">Refresh</button><button id="logout">Sign out</button></div></div><nav class="portal-tabs" aria-label="Employee portal">${['Home',...features].map(t=>`<button data-tab="${esc(t)}"${tab===t?' aria-current="page" class="active"':''}>${esc(t)}</button>`).join('')}</nav>${features.includes('Time')?`<section class="punch"><h2>${open?'On the clock':'Time clock'}</h2><p class="muted">Work time zone · ${esc(d.timezone)}</p>${punch}</section>`:''}${tab==='Time'?times:selfserviceContent(tab,session)+(tab==='Home'&&features.includes('Time')?times:'')}`;
+  app.innerHTML = `<div class="bar"><div><p class="muted">${esc(d.company)}</p><h1>${esc(d.employee)}</h1></div><div class="row"><button id="refresh">Refresh</button><button id="logout">Sign out</button></div></div><nav class="portal-tabs" aria-label="Employee portal">${['Home',...features,'Setup help'].map(t=>`<button data-tab="${esc(t)}"${tab===t?' aria-current="page" class="active"':''}>${esc(t)}</button>`).join('')}</nav>${features.includes('Time')?`<section class="punch"><h2>${open?'On the clock':'Time clock'}</h2><p class="muted">Work time zone · ${esc(d.timezone)}</p>${punch}</section>`:''}${tab==='Setup help'?'<section class="card"><h2>Public setup help</h2><p>This assistant searches only the installed public setup guide. Ask your company support contact for help with employee workflows.</p><form id="setup-help"><label>Setup question<input name="question" maxlength="1500" required></label><p class="error" role="alert"></p><button>Search guide</button></form><div id="setup-answer" aria-live="polite"></div></section>':tab==='Time'?times:selfserviceContent(tab,session)+(tab==='Home'&&features.includes('Time')?times:'')}`;
+  if(tab==='Setup help'&&supportScope==='private-customer-manual'){
+    const form=app.querySelector('#setup-help');form.parentElement.querySelector('h2').textContent='Privately supplied customer manual';form.previousElementSibling.textContent='Your host explicitly selected this customer manual. Retrieval reads documentation only and has no company-data access.';form.querySelector('label').firstChild.textContent='Documentation question';
+  }
 }
 async function refresh() {
   if(new URLSearchParams(location.hash.slice(1)).has('setup')){login();return;}
@@ -75,6 +75,7 @@ app.addEventListener('submit',async ev=>{
   try {
     if(form.id==='setup'){if(values.password!==values.confirm)throw Error('Passwords do not match.');await api('identity/invite/accept',{token:new URLSearchParams(location.hash.slice(1)).get('setup'),password:values.password});history.replaceState(null,'',location.pathname);login();say('Password set. Sign in with your assigned username.');}
     else if(form.id==='login') { session=await api('login', {username:values.username,password:values.password}); render(); }
+    else if(form.id==='setup-help'){const result=await api('support/answer',{question:values.question});document.querySelector('#setup-answer').innerHTML='<p>'+esc(result.answer)+'</p>'+(result.citations||[]).map(c=>'<p>'+esc(c.title)+' · '+esc(c.version)+' · '+esc(c.section||'')+'</p>').join('')+'<p>'+esc(result.escalation?.message||'')+'</p>';}
     else if(form.dataset.service){const response=await selfserviceSubmit(form,button,session,api);session=response?.user?response:await api('session');render();say(response?.result?.receipt?'Received. Receipt: '+response.result.receipt:'Saved.');}
     else {
       const type=form.dataset.correction?'correction':form.id;
@@ -90,7 +91,7 @@ app.addEventListener('submit',async ev=>{
 });
 app.addEventListener('click', async ev=>{
   if(busy)return;
-  const target=ev.target.closest('[data-tab]');if(target){tab=target.dataset.tab;render();return;}
+  const target=ev.target.closest('[data-tab]');if(target){tab=target.dataset.tab;if(tab==='Setup help'){try{supportScope=(await api('support/info')).scope;}catch(e){say(e.message);}}render();return;}
   if(ev.target.id==='refresh'){busy=true;try{await refresh();}finally{busy=false;}return;}
   if(ev.target.id!=='logout')return;
   busy=true;

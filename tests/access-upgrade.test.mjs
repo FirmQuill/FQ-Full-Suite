@@ -1,4 +1,3 @@
-import {receipt} from './agreement-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
@@ -11,6 +10,7 @@ import {openStore,tx,saveBooks,passwordHash,putUser} from '../store.mjs';
 import {initializeWorker,workerCommand,workerView} from '../worker.mjs';
 import {setEmployeeProfile} from '../records.mjs';
 import {createSuite} from '../server.mjs';
+import {fixtureAgreement} from './fixture-terms.mjs';
 
 const OWNER_PASSWORD='Fictional owner password 902!';
 const WORKER_PASSWORD='Fictional worker password 903!';
@@ -30,9 +30,8 @@ async function client(url,username,password){
     const data=response.headers.get('content-type')?.includes('application/json')?await response.json():Buffer.from(await response.arrayBuffer());
     return {status:response.status,data,headers:response.headers};
   }
-  let login=username?await request('login',{username,password}):null;
-  if(login?.status===200){jar.cookie=login.headers.get('set-cookie').split(';')[0];jar.csrf=login.data.csrf;}
-  if(login?.data?.termsRequired)login=await request('terms',receipt);
+  const login=username?await request('login',{username,password}):null;
+  if(login?.status===200){jar.cookie=login.headers.get('set-cookie').split(';')[0];jar.csrf=login.data.csrf;if(login.data.termsRequired){const accepted=await request('terms',fixtureAgreement);assert.equal(accepted.status,200);login.data=accepted.data;}}
   return {login,request};
 }
 async function fixture(t){

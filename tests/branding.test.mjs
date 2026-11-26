@@ -11,7 +11,7 @@ import {createSuite} from '../server.mjs';
 
 const password='Fictional portal branding test';
 const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aNTsAAAAASUVORK5CYII=';
-test('owner configures worker company or parent branding; isolation, fallback and persistence',async()=>{
+test('owner configures worker company or parent branding; isolation, fallback and persistence',{timeout:120000},async()=>{
   const dir=await mkdtemp(join(tmpdir(),'fq-branding-')), database=join(dir,'sample.sqlite');
   let suite,db,browser;
   try{
@@ -85,7 +85,7 @@ test('owner configures worker company or parent branding; isolation, fallback an
       await workerPage.getByRole('button',{name:'Sign out',exact:true}).click();
       await workerPage.locator('.brand').getByText('FirmQuill',{exact:true}).waitFor();
     }else assert.equal((await update(child.id,2,'parent',{parent})).status,200);
-    await suite.close();suite=null;
+    await browser?.close();browser=null;await suite.close();suite=null;
     db=openStore(database);
     assert.equal(db.prepare('SELECT parent FROM worker_branding WHERE company=?').get(child.id).parent,parent);
   }finally{await browser?.close();await suite?.close();db?.close();await rm(dir,{recursive:true,force:true});}

@@ -4,9 +4,9 @@ import {promisify} from 'node:util';
 import {newVault,apply,validateState} from './shared/core.mjs';
 import {initializeWorker,workerPending,workerReview,workerView,workerCommand} from './worker.mjs';
 import {initializeRecords} from './records.mjs';
-import {initializeBranding} from './branding.mjs';
 import {initializeBenefits} from './benefits.mjs';
 import {initializeIdentity} from './identity.mjs';
+import {initializeBranding} from './branding.mjs';
 import {initializeAccess,ensureWorkerAccounts,accountAreas,saveAreas,ERP_AREAS,requireActionArea,projectErpState} from './access.mjs';
 
 const kdf=promisify(scrypt);
@@ -24,22 +24,17 @@ function openStore(filename){
       db.exec(`PRAGMA application_id=1179735372; PRAGMA user_version=1;
         CREATE TABLE IF NOT EXISTS books(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL,body TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS accounts(id TEXT PRIMARY KEY,username TEXT NOT NULL UNIQUE,name TEXT NOT NULL,role TEXT NOT NULL,assignments TEXT NOT NULL,employeeId TEXT NOT NULL,active INTEGER NOT NULL,hash TEXT NOT NULL,authVersion INTEGER NOT NULL);
+        CREATE TABLE IF NOT EXISTS terms_acceptances(account_id TEXT NOT NULL REFERENCES accounts(id),version TEXT NOT NULL,accepted_at TEXT NOT NULL,PRIMARY KEY(account_id,version));
+        CREATE TABLE IF NOT EXISTS terms_acceptance_hashes(account_id TEXT NOT NULL REFERENCES accounts(id),version TEXT NOT NULL,content_hash TEXT NOT NULL,accepted_at TEXT NOT NULL,PRIMARY KEY(account_id,version,content_hash));
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at TEXT NOT NULL,actor TEXT NOT NULL,companyId TEXT NOT NULL,kind TEXT NOT NULL,detail TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY,companyId TEXT NOT NULL,kind TEXT NOT NULL,label TEXT NOT NULL,status TEXT NOT NULL,requestedBy TEXT NOT NULL,action TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS requests(actor TEXT NOT NULL,requestId TEXT NOT NULL,fingerprint TEXT NOT NULL,approval TEXT,PRIMARY KEY(actor,requestId));`);
       db.prepare('INSERT OR IGNORE INTO books VALUES(1,0,?)').run(JSON.stringify(empty));
       initializeWorker(db);
       initializeRecords(db);
-      initializeBranding(db);
-      db.exec(`CREATE TABLE IF NOT EXISTS terms_acceptances(
-        account_id TEXT NOT NULL REFERENCES accounts(id), version TEXT NOT NULL,
-        accepted_at TEXT NOT NULL, PRIMARY KEY(account_id,version));
-      CREATE TABLE IF NOT EXISTS terms_acceptance_hashes(
-        account_id TEXT NOT NULL REFERENCES accounts(id), version TEXT NOT NULL,
-        content_hash TEXT NOT NULL, accepted_at TEXT NOT NULL,
-        PRIMARY KEY(account_id,version,content_hash));`);
       initializeBenefits(db);
       initializeIdentity(db);
+      initializeBranding(db);
       initializeAccess(db);
       ensureWorkerAccounts(db,readBooks(db).state);
       db.exec('PRAGMA user_version=2');

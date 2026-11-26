@@ -3,7 +3,6 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,createHash} from 'node:crypto';
 import {termsVersion,termsText} from './web/legal/terms.mjs';
 import {legacyAgreement} from './web/legal/consent.mjs';
-const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 import {openStore,tx,readBooks,saveBooks,revisionCheck,audit,safeUser,owner,scoped,passwordHash,passwordMatches,putUser,actionFor,approvalList,decide,auditEvents,requireThat,workerView,workerCommand} from './store.mjs';
 import {inspectLite,exportLite,assertEmptyDestination} from './transfer.mjs';
 import {recordsView,recordsCommand,recordFile,employeeProfile} from './records.mjs';
@@ -11,11 +10,16 @@ import {benefitsView,benefitsCommand,benefitFile,effectivePayrollDeductions} fro
 import {createIdentityService} from './identity.mjs';
 import {brandingSettings,saveWorkerBranding,workerBranding,workerBrandLogo} from './branding.mjs';
 import {accountAreas,requireArea,ERP_AREAS,saveAreas,WORKER_FEATURES,workerFeatures,requireWorkerFeature,workerRecords} from './access.mjs';
+import {migrationView,migrationCommand} from './migration.mjs';
+import {createAgentService} from './agent-access.mjs';
+import {createSupportService} from './support.mjs';
+import {createSetupPackage} from './setup-package.mjs';
 
 const token=()=>randomBytes(32).toString('base64url');
+const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
 const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs']);
-const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs']);
+const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs']);
 const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
@@ -29,10 +33,13 @@ async function jsonBody(req,max){
   return data;
 }
 function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHeader('Content-Type')||'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
-async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={}}){
+async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={}}){
   const db=openStore(database),sessions=new Map(),attempts=new Map();
-  if(termsVersion===legacyAgreement.version&&termsHash===legacyAgreement.hash)
+  if(termsVersion===legacyAgreement.version&&termsHash===legacyAgreement.hash){
     db.prepare('INSERT OR IGNORE INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) SELECT account_id,version,?,accepted_at FROM terms_acceptances WHERE version=?').run(termsHash,termsVersion);
+  }
+  const agents=createAgentService({db});
+  const support=createSupportService(supportOptions);
   const identity=createIdentityService({db,database,readBooks,saveBooks,passwordHash,putUser,...identityOptions});
   const dummyHash=await passwordHash(token()),servers=[];
   let expensive=0;
@@ -47,9 +54,6 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     if(u.role!=='worker'&&u.employeeId)requireThat(db.prepare('SELECT enabled FROM employee_erp_flags WHERE company=? AND employee=?').get(u.assignments[0],u.employeeId)?.enabled,401,'ERP access is disabled.');
     session.until=Date.now()+30*60000;return u;
   }
-  function hasAccepted(user){
-    return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);
-  }
   function snapshot(user,s,extras={}){
     if(!hasAccepted(user))return {termsRequired:termsVersion,csrf:s.csrf};
     const {state,revision}=readBooks(db);
@@ -58,6 +62,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,recordsView(db,user,state)),benefits:features.includes('Benefits')?benefitsView(db,user,state):null}:
       {user:{...publicUser(user),areas:accountAreas(db,user)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
+  function hasAccepted(user){return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);}
   function portalServer(portal,publicOrigin){
     return createServer(async(req,res)=>{
       const localPort=req.socket.localPort;
@@ -75,13 +80,16 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           requireThat(req.method==='GET'||req.method==='HEAD',405,'Method unavailable.');
           let name=path==='/'?'index.html':path.slice(1),root='web/'+portal+'/';
           if(path.startsWith('/legal/')){
-            name=path.slice(7);
-            requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');
-            root='web/legal/';
+            name=path.slice(7);requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');root='web/legal/';
           }else if(path.startsWith('/shared/')){
             name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png'].includes(name)),404,'File unavailable.');root='shared/';
           }else requireThat((portal==='main'?mainFiles:workerFiles).has(name),404,'File unavailable.');
           const bytes=await readFile(new URL('./'+root+name,import.meta.url));res.writeHead(200,{'Content-Type':mime[name.split('.').pop()]});res.end(req.method==='HEAD'?undefined:bytes);return;
+        }
+        if(path.startsWith('/api/agents/')){
+          requireThat(portal==='main',404,'Endpoint unavailable.');
+          const body=req.method==='POST'?await jsonBody(req,64*1024):undefined;
+          send(res,200,await agents.request(req.method,url,req.headers,body));return;
         }
         if(path.startsWith('/api/scim/')){
           requireThat(portal==='main',404,'Endpoint unavailable.');
@@ -134,26 +142,30 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(path==='/api/session'&&!post){send(res,200,snapshot(u,s));return;}
         if(path==='/api/logout'&&post){sessions.delete(sid);setCookie('',0);send(res,200,{ok:true});return;}
         if(path==='/api/terms'&&post){
-          const p=await jsonBody(req,4096);
-          requireThat(sessions.get(sid)===s,401,'Sign in again.');
-          const u=userFor(s,portal);
-          requireThat(p.version===termsVersion&&p.hash===termsHash,409,'Terms changed. Reload to read the current version.');
-          db.prepare('INSERT INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) VALUES(?,?,?,?) ON CONFLICT(account_id,version,content_hash) DO NOTHING').run(u.id,termsVersion,termsHash,new Date().toISOString());
-          send(res,200,snapshot(u,s));return;
+          const body=await jsonBody(req,512);requireThat(sessions.get(sid)===s,401,'Sign in again.');const account=userFor(s,portal);
+          requireThat(body.version===termsVersion&&body.hash===termsHash,409,'Terms changed. Reload to read the current version.');
+          tx(db,()=>{db.prepare('INSERT INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) VALUES(?,?,?,?) ON CONFLICT(account_id,version,content_hash) DO NOTHING').run(account.id,termsVersion,termsHash,new Date().toISOString());});
+          send(res,200,snapshot(account,s));return;
         }
-        requireThat(hasAccepted(u),428,'Accept the current Terms of Service to use this portal.');
+        requireThat(hasAccepted(u),428,'Read and agree to the Terms of Service first.');
+        if(path==='/api/support/info'&&!post){send(res,200,await support.info());return;}
+        if(path==='/api/support/search'&&!post){send(res,200,await support.search(url.searchParams.get('q')||''));return;}
+        if(path==='/api/support/article'&&!post){send(res,200,await support.article(url.searchParams.get('id')));return;}
+        if(path==='/api/support/answer'&&post){const p=await jsonBody(req,4096);send(res,200,await support.answer(p.question));return;}
+        if(portal==='main'&&path==='/api/migration'){
+          const result=post?migrationCommand(db,userFor(s,portal),await jsonBody(req,4*1024*1024)):migrationView(db,u);
+          send(res,200,result.packageRequested?createSetupPackage(result.dataset,result.approval):result);return;
+        }
+        if(portal==='main'&&path==='/api/agent-admin'&&!post){send(res,200,agents.view(u));return;}
+        if(portal==='main'&&path==='/api/agent-admin/action'&&post){const p=await jsonBody(req,64*1024);send(res,200,agents.command(userFor(s,portal),p));return;}
         const {state:workforceState}=readBooks(db),scope={companyId:url.searchParams.get('companyId')||undefined,employeeId:url.searchParams.get('employeeId')||undefined};
         if(portal==='worker'&&path==='/api/worker-brand/logo'&&!post){
-          const logo=workerBrandLogo(db,workforceState,u.assignments[0]);
-          requireThat(logo,404,'Company logo unavailable.');
-          res.writeHead(200,{'Content-Type':logo.mime});res.end(logo.bytes);return;
+          const logo=workerBrandLogo(db,workforceState,u.assignments[0]);requireThat(logo,404,'Company logo unavailable.');res.writeHead(200,{'Content-Type':logo.mime});res.end(logo.bytes);return;
         }
         if(portal==='main'&&path==='/api/worker-brand'){
-          owner(u);
-          if(!post){send(res,200,brandingSettings(db,workforceState,scope.companyId));return;}
+          owner(u);if(!post){send(res,200,brandingSettings(db,workforceState,scope.companyId));return;}
           const p=await jsonBody(req,720*1024);
-          const result=tx(db,()=>{const active=userFor(s,portal);owner(active);const result=saveWorkerBranding(db,readBooks(db).state,p);
-            audit(db,active,p.companyId,'worker portal branding updated',JSON.stringify({mode:result.mode,parent:result.parent,hasLogo:result.hasLogo}));return result;});
+          const result=tx(db,()=>{const active=userFor(s,portal);owner(active);const result=saveWorkerBranding(db,readBooks(db).state,p);audit(db,active,p.companyId,'worker portal branding updated',JSON.stringify({mode:result.mode,parent:result.parent,hasLogo:result.hasLogo}));return result;});
           send(res,200,result);return;
         }
         if(path==='/api/records'&&!post){if(portal==='main')requireArea(db,u,'Employee records');const r=recordsView(db,u,workforceState,scope);send(res,200,portal==='worker'?workerRecords(db,u,r):r);return;}

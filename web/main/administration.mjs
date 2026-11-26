@@ -3,6 +3,7 @@ import {check,accounts} from '/shared/core.mjs';
 import {recordsContent,recordsAction} from './record-admin.mjs';
 import {benefitsContent,benefitsAction} from './benefit-admin.mjs';
 import {identityContent,identityAction,employeeAccessContent} from './identity-admin.mjs';
+import {connectedContent,connectedAction} from './connected-admin.mjs';
 
 const roleLabels={owner:'Owner',manager:'Manager',bookkeeper:'Bookkeeper',viewer:'Viewer',worker:'Worker',hr:'Human Resources',payroll:'Payroll'};
 const erpAreas=['Overview','Directory','Sales','Purchasing','Jobs & time','Warehouse','Assembly','Fixed assets','Accounting','Banking','Reports','Payroll','History','Company setup','Approvals','Audit trail','Employee records','Benefits administration','Identity connectors'];
@@ -46,6 +47,7 @@ function transferView(session){
     panel('Full Suite records','<p>Use a Full Suite database backup for disaster recovery. User accounts, roles, worker clock records, correction requests, server audit events and pending approvals stay with the installation. Approved time posted to company books travels in the portable snapshot.</p>');
 }
 function suiteContent(page,data,session,companyId){
+  if(['Migration workspace','Agent access','Setup help'].includes(page))return connectedContent(page,data,session);
   if(page==='Portable transfers')return transferView(session);
   if(!data)return '<p class="quiet">Loading records…</p>';
   if(data.error)return `<div class="callout warn">${esc(data.error)}</div>`;
@@ -147,6 +149,7 @@ function exportLite(ctx){
   });
 }
 async function suiteAction(type,key,ctx){
+  if(await connectedAction(type,key,ctx))return true;
   if(await recordsAction(type,key,ctx)||await benefitsAction(type,key,ctx)||await identityAction(type,key,ctx))return true;
   switch(type){
     case 'add-user':editUser(null,ctx);return true;

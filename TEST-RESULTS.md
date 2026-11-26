@@ -1,49 +1,21 @@
-# Employee upgrade verification
+# FirmQuill Full Suite 0.3.0-preview.1 verification
 
-November 26, 2026 · FirmQuill Full Suite 0.2.0 preview
+November 26, 2026. Windows, Node 24.22.3, SQLite and Microsoft Edge 158.0.4370.33.
 
-**89 tests passed; 0 failed; 0 skipped.** Final run completed in 35.34 seconds on this Windows laptop with Node 24.22.3, SQLite and Microsoft Edge 158.0.4370.33. Playwright came from the installed local runtime. Tests used temporary fictional databases, real loopback HTTP listeners and actual Edge sessions.
+**123 tests passed, 0 failed, 0 skipped** in 66.21 seconds. Full output is in verification.log. Tests use temporary fictional databases and real loopback HTTP/browser sessions.
 
-Command, with installed Playwright/Edge paths supplied through the existing `FIRMQUILL_` and `ERP_LITE_` browser environment variables:
+The final suite covers inherited accounting/stock/bank/report rules, pinned Lite bytes, employee and worker workflows, terms assent and worker branding; owner-only multi-source staging, mappings/profiles, duplicate conflicts and cross-source candidates, row errors, independent balance checks and unresolved reports; package schema/filename/size/hash/reference validation, temporary initialization, safe retry, races and restart without reimport; scoped agent reads/proposals, human approval, revocation, MCP and recovery; default setup-only retrieval, exact version/article citations, missing-guidance escalation and explicit private documentation opt-in; and strict distribution allowlists with private-file canaries.
+
+A copy of the existing five-company fictional Harborline database retained every original table's business rows through two restarts and encrypted recovery. Versioned agreement hash receipts may be backfilled by the already-preserved terms migration. Existing source databases were not opened for writes.
+
+The public guide has 12 actual setup PNGs. The separate private manual has 20 articles and 44 actual PNGs with captions and alt text. Its offline browser verification checked search, article selection, image decode, escalation, no external requests and no page errors. Private documentation is absent from the default help catalog and public runtime build.
+
+Verified import coverage is explicit generic CSV mapping plus inherited QuickBooks/Wave bank templates. Native accounting/payroll export adapters remain unverified. Official export availability/steps and exact sanitized-sample requirements are in the separate implementation coverage matrix. Tax, inventory and complex document conversion are exceptions; archived payroll is isolated from live employees, payroll execution and YTD tax calculations. No live identity/AI/payroll provider or customer export was used.
+
+For source tests, set FIRMQUILL_PLAYWRIGHT and ERP_LITE_PLAYWRIGHT to the installed Playwright module path; set FIRMQUILL_BROWSER_EXE and ERP_LITE_BROWSER_EXE to the Edge executable. FIRMQUILL_HARBORLINE_FIXTURE must point to a disposable fictional five-company SQLite fixture. Run:
 
 ```powershell
 node --test --test-concurrency=2 tests/*.test.mjs lite-tests/core.test.mjs lite-tests/interop.test.mjs lite-tests/payroll-rules.test.mjs lite-tests/vault.test.mjs
 ```
 
-Complete final output: `verification.log`. The older report is retained at `baseline/FULL-0.1-TEST-RESULTS.md`.
-
-## Verified workflows
-
-| Area | Evidence |
-|---|---|
-| Upgrade | Schema 1 to 2 preserves original employee/account IDs, hashes, books and punches; creates missing workers without default passwords; repeated migrations retain history. |
-| Worker app | Combined records/time app, single-use password setup and renewal (including an already signed-in page), local login/clock without an IdP, original corrections/approvals retained. |
-| Feature flags | Actual admin forms, worker navigation and server projections agree; disabled actions/files are denied; open shifts block Time disabling. |
-| Separate ERP | Actual flags, invite/setup, independent passwords, cross-portal credential denial, Directory-only navigation/API scope, role checks, area ceiling/grant intersection, immediate ERP revocation with continuing worker access. |
-| ERP projection | Restricted Jobs & time renders real time/names without hourly rates/costs. Authorized journals retain source references; other-area attachments and embedded payroll history are omitted. |
-| Employee records | Actual contact/profile/education/certification/project forms; edit/request/view rules; correction decisions; effective-dated and future history, scheduled deactivation and backdated separation after rehire; contact fallbacks. |
-| Reviews | Author-private drafts; other HR/manager draft denial; publish metadata; immutable published review and employee acknowledgement; company/employee denial. |
-| Paystubs | Permissioned finalized PDF publishing and exact-byte authenticated download in actual UI; no generated earnings; employee/Payroll/owner visibility; HR/manager/cross-company denial. |
-| Enrollment | Actual warehouse worker submits 2028 open first, then 2027 initial; separate choices and receipts. Reverse order, independent waivers, override/group priority, company-local deadline, immutable submissions and explicit HR coverage conflicts also tested. |
-| Special cases | Actual evidence upload/receipt reaches assigned HR UI; information request and employee reply; restricted evidence and human decisions with reason/deadline/effective date. |
-| Retirement | Pending receipt, independent schedules/options/limits/precision, payroll confirmation and date-selected deduction instructions, provider export stays pending, current/future/historical transitions and closed-payroll protection. |
-| Provisioning | Scoped stable IDs, repeat sync, explicit email-conflict review, manager/group mapping without ERP elevation, deactivation/session revocation, rehire preservation, encrypted secrets and safe sync-history outcomes. |
-| SCIM HTTP | SCIM media type, Users create/list/filter/pagination/update/PATCH/deactivation, token rotation and company scope, malformed requests, invite/login/clock, immediate revocation and rehire retaining original punch. |
-| Federation | Deterministic provider fixtures verify RS256 signature, issuer/audience/expiry/nonce/state/browser binding/PKCE, separate reviewed worker/ERP subject links, and disabled ERP flags/account denial without worker elevation. |
-| Recovery/regression | Authenticated whole-database recovery, consistent WAL snapshot, existing-destination protection, encrypted Lite transfers, unchanged pinned shared-file hashes, inherited accounting/reconciliation/inventory/federal worksheet/encrypted-vault checks. |
-
-Worker portal/browser checks ran at 390px and 1280px; the existing admin suite used 1440px. No page errors or document-wide horizontal overflow were found. Screenshots were visually inspected. The mobile Benefits screenshot shows both submitted cards and pending 401(k); desktop evidence shows assigned HR routing. Tests closed their servers and browser contexts.
-
-## Evidence limits
-
-No live AD, Entra/other issuer, SCIM client, carrier or retirement credentials were supplied. Live certificate/trust-chain rejection, AD read-only ACLs and provider interoperability require deployment-specific validation. AD uses TLS Bind/Search without certificate overrides. OIDC supports code/PKCE and RS256; SCIM is the documented Users subset, without Groups/Bulk/provider-specific extensions.
-
-No external provider mutation or production payroll execution occurred. The inherited payroll is a preview; this release supplies real finalized-PDF publishing and a permissioned effective-deduction instruction/export bridge. Health elections require HR confirmation; external retirement requests stay pending until recorded confirmation. No automatic legal eligibility decision or email notification runs.
-
-Migration ran on synthetic upgrade fixtures, not a selected business database. First startup against an existing schema-1 database applies the tested migration; retain a pre-upgrade backup. PDFs/evidence live in SQLite. The inherited 64 MiB recovery limit, protected host storage and separate connector-key backup are documented in OPERATIONS.md. Filesystem administrators can alter the database; application audit is not independent attestation.
-
-Nothing was published. FirmQuill Lite and 2027 payroll research were left unchanged.
-
-## Terms acceptance regression check
-
-November 26, 2026: 92 checks passed with Node 24.22.3 and Chromium on Linux, including the ERP and worker first-use dialogs, decline and retry, account-scoped hash receipts, import and employee endpoint gating, and the existing employee, branding, accounting and transfer checks. The approved agreement is unchanged.
+Normal startup remains node host.mjs start or Start FirmQuill Full.cmd. Fresh browser setup is node host.mjs configure. See SETUP-GUIDE.html for exact setup instructions. The runtime ZIP excludes source tests and developer/manual documentation; the source checkout includes the tests and release builder.

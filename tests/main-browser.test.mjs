@@ -1,4 +1,3 @@
-import {acceptIfRequired} from './agreement-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
@@ -9,6 +8,7 @@ import {createSuite} from '../server.mjs';
 import {openStore,tx,passwordHash,putUser} from '../store.mjs';
 import {sampleVault} from '../shared/sample.mjs';
 import {exportLite,inspectLite} from '../transfer.mjs';
+import {seedFixtureTerms,acceptFixtureBrowser} from './fixture-terms.mjs';
 
 if(process.env.FIRMQUILL_BROWSER_EXE)test('main portal opens a migrated tenant, accepts team actions, reconciles a portable export and handles a stale tab',async t=>{
   const {chromium}=createRequire(import.meta.url)(process.env.FIRMQUILL_PLAYWRIGHT||'playwright');
@@ -16,7 +16,7 @@ if(process.env.FIRMQUILL_BROWSER_EXE)test('main portal opens a migrated tenant, 
   const password='Synthetic test passphrase 19';
   const snapshot=sampleVault(),encoded=await exportLite(snapshot,password);
   const db=openStore(database);
-  try{const hash=await passwordHash(password);tx(db,()=>putUser(db,null,{name:'Synthetic Owner',username:'test-owner',role:'owner',assignments:[]},hash,{bootstrap:true}));}finally{db.close();}
+  try{const hash=await passwordHash(password);tx(db,()=>putUser(db,null,{name:'Synthetic Owner',username:'test-owner',role:'owner',assignments:[]},hash,{bootstrap:true}));seedFixtureTerms(db);}finally{db.close();}
   let browser,suite;
   try{
     suite=await createSuite({database,mainPort:0,workerPort:0});
@@ -30,7 +30,7 @@ if(process.env.FIRMQUILL_BROWSER_EXE)test('main portal opens a migrated tenant, 
       await p.goto(suite.mainUrl);
       const f=p.locator('#login');
       await f.locator('[name=username]').fill(username);await f.locator('[name=password]').fill(password);
-      await f.locator('button').click();await acceptIfRequired(p);await p.locator('.toolbar').waitFor();
+      await f.locator('button').click();await acceptFixtureBrowser(p);await p.locator('.toolbar').waitFor();
     }
     await login(page,'test-owner');await page.getByRole('heading',{name:'Set up your books'}).waitFor();
     await click(page,'nav','Portable transfers');await click(page,'portable-import');

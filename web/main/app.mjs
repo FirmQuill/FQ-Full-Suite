@@ -13,7 +13,7 @@ let idleTimer,lastActivity=0;
 const idleLimit=5*60*1000;
 const localDate=()=>{const now=new Date();return [now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');};
 let filter={from:'2000-01-01',through:localDate(),group:''};
-const readOnlyActs=new Set(['nav','menu','refresh','logout','detail','worksheet','print document','get attachment','export','cancel']);
+const readOnlyActs=new Set(['nav','menu','refresh','logout','detail','worksheet','print document','get attachment','export','cancel','support-search','support-ask','support-article']);
 function toast(message){notice.textContent=message;clearTimeout(toast.timer);toast.timer=setTimeout(()=>notice.textContent='',4600);}
 function showError(error){
   const el=dialog.open?dialog.querySelector('.error'):app.querySelector('.error');
@@ -76,14 +76,14 @@ function suitePages(){
   const role=session.user.role;
   const workforce=['Employee records',...(['owner','hr','payroll'].includes(role)?['Benefits administration']:[])];
   const pages=role==='owner'?['Approvals','User access','Audit trail','Portable transfers',...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
-  return pages.filter(p=>role==='owner'||session.user.areas?.includes(p));
+  return [...pages.filter(p=>role==='owner'||session.user.areas?.includes(p)),...(role==='owner'?['Migration workspace','Agent access']:[]),'Setup help'];
 }
 function setup(c){return panel('Company profile',`<p><b>${esc(c.name)}</b></p><p class="quiet">${acts.filter(([v])=>c.activities.includes(v)).map(([,n])=>esc(n)).join(' · ')||'No activities selected'}</p><div class="rule"></div><p>Featured on overview</p><p>${esc(c.featured.join(' · ')||'None')}</p>`,btn('settings','Edit profile'))+
   panel('Workspaces','<p>Each company keeps its own contacts, stock, document numbers and journals.</p>',session.user.role==='owner'?btn('company','Add company'):'');}
 const views={'Overview':home,'Directory':contacts,'Sales':c=>commerceView(c,true),'Purchasing':c=>commerceView(c,false),'Jobs & time':jobs,'Warehouse':c=>warehouse(c,false),'Assembly':c=>warehouse(c,true),'Fixed assets':assetsView,'Accounting':accounting,'Banking':banks,'Reports':reportView,'Payroll':payrollView,'History':history,'Company setup':setup};
 function restrictedJobs(c){return panel('Jobs',table(['Job'],c.jobs.map(j=>[esc(j.name)])),btn('job','New job'))+panel('Time entries',table(['Date','Employee / job','Minutes','Review'],c.time.toReversed().map(t=>[esc(t.date),esc(title(c.employees,t.employee))+' · '+esc(title(c.jobs,t.job)),t.minutes,t.approved?'Approved':btn('approve time','Approve',t.id)])),btn('time','Log time'))+panel('Employees',table(['Name','Work state','Locality'],c.employees.map(e=>[esc(e.name),esc(e.state),esc(e.locality)])));}
 function payrollBridge(){return (session.user.role==='owner'||session.user.areas?.includes('Employee records')?panel('Publish finalized employee paystubs','<p>Import real finalized PDFs from your payroll process. Employees can securely download or print their own published copies. The worksheet does not generate earnings or finalized stubs.</p>',btn('nav','Publish finalized PDFs','Employee records')):'')+panel('Employee deduction instructions','<p>Review confirmed employee contribution instructions for the selected pay date. Apply them through your payroll process. Closed payroll is never changed.</p>',btn('payroll-deductions','View effective deductions'))+(session.user.role==='owner'||session.user.areas?.includes('Benefits administration')?panel('Pending employer plan changes','<p>Review and export pending requests before recording payroll or provider confirmation.</p>',btn('nav','Open employer plan queue','Benefits administration')):'');}
-const endpoints={'Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity'};
+const endpoints={'Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Agent access':'agent-admin','Setup help':'support/info'};
 async function loadPage(){
   const generation=++loadGeneration;auxiliary=null;render();
   if(!session||!endpoints[page])return;
@@ -108,7 +108,7 @@ function render(){
   const s=session.state,user=session.user,c=s.companies.find(x=>x.id===companyId);
   const full=suitePages();
   const allowed=key=>user.role==='owner'||user.areas?.includes(key);
-  if((!views[page]&&!full.includes(page))||(!full.includes(page)&&!allowed(page)))page=full[0]||Object.keys(views).find(allowed)||'Overview';
+  if((!views[page]&&!full.includes(page))||(!full.includes(page)&&!allowed(page)))page=Object.keys(views).find(allowed)||full[0]||'Overview';
   let nav=allowed('Overview')?label('Workspace')+navButton('Overview'):'';
   if(c){
     nav+=(allowed('Directory')?navButton('Directory'):'')+(c.featured.some(allowed)?label('Featured'):'')+c.featured.filter(allowed).map(navButton).join('')+

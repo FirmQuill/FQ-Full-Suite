@@ -1,0 +1,11 @@
+{
+  "version":"0.3.0-preview.1",
+  "scope":"public-setup-only",
+  "articles":[
+    {"id":"install-launch","title":"Install and launch FirmQuill Full Suite","file":"install-launch.md","status":"verified-local","keywords":["install","launch","start","node","runtime","port","database","host","empty","setup"]},
+    {"id":"first-admin","title":"Create the first administrator and sign in","file":"first-admin.md","status":"verified-local","keywords":["owner","administrator","first","password","login","sign","account","init","setup"]},
+    {"id":"initialize-workspace","title":"Initialize an empty workspace or reviewed company package","file":"initialize-workspace.md","status":"verified-local","keywords":["initialize","empty","company","package","setup","preview","confirm","discovery","retry","duplicate"]},
+    {"id":"setup-verification","title":"Verify initial setup and handoff","file":"setup-verification.md","status":"verified-local","keywords":["verify","verification","count","balance","reconciliation","manifest","integrity","exception","handoff","version","support"]},
+    {"id":"setup-failures","title":"Diagnose setup failures and retry safely","file":"setup-failures.md","status":"verified-local","keywords":["failure","error","retry","schema","integrity","path","size","reference","port","origin","login","permission","recovery","support","escalation"]}
+  ]
+}
