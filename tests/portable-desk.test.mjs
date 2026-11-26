@@ -48,3 +48,21 @@ test('JSON and encrypted Full to Lite to Full transfers retain every audit obser
  const edited=applyDesk(projected,x.company,{type:'count observe',date:day,count:openId,contents:[{item:x.item,qty:6}],notes:'Lite owner verified corrected count'},apply),target=fixture(t);migrateOwnerDesk(target.db,edited);
  const changed=assetsView(target.db,target.owner,edited,{companyId:x.company}).sessions.find(s=>s.id===openId);assert.deepEqual(changed.observationHistory.map(o=>o.contents[0].quantity),[7,6]);assert.equal(changed.observationHistory[0].location,'Fictional wrong dock');assert.equal(changed.observations[0].contents[0].quantity,6);assert.equal(changed.observations[0].note,'Lite owner verified corrected count');assert.equal(changed.status,'submitted');assert.deepEqual(position(edited.companies[0],x.item,'Main'),{qty:28,value:28000});
 });
+
+test('warehouse trace and bin metadata is portable without platform IDs or shared planning permissions',async t=>{
+  const src=fixture(t), unitId=src.asset({type:'register',identifier:'PORT-WH-1',name:'Traceable portable stock',kind:'pallet',location:'Main',date:day,contents:[{itemId:src.item,quantity:5}]}).unitId;
+  src.asset({type:'warehouse-bin',unitId,bin:'B-09',date:day});
+  const traceId=src.asset({type:'warehouse-trace',unitId,itemId:src.item,lot:'Portable lot',serial:'SN-222',expiry:'2027-04-07',quantity:1,date:day}).metadataId;
+  src.asset({type:'warehouse-trace-release',traceId,note:'Retain as history',date:day});
+  src.asset({type:'warehouse-reorder',itemId:src.item,location:'Main',minimum:30,target:42,date:day});
+  src.asset({type:'warehouse-pick-create',name:'Full Suite only pick',unitId,lines:[{itemId:src.item,quantity:1}]});
+  const portable=portableDeskState(src.db,src.state),c=portable.companies[0],plain=JSON.stringify(portable);
+  assert.equal(c.desk.warehouse.events.length,4);assert.ok(!plain.includes(src.owner.id));assert.ok(!plain.includes('Full Suite only pick'));
+  assert.ok(portableDeskReport(portable)[0].warnings.some(x=>x.includes('scheduled auditor assignments')));
+  const pkg=await exportLite(portable,'Fictional portable warehouse checkpoint');
+  const {state}=await inspectLite(pkg.envelope,'Fictional portable warehouse checkpoint');
+  const dest=fixture(t);migrateOwnerDesk(dest.db,state);migrateOwnerDesk(dest.db,state);
+  const w=assetsView(dest.db,dest.owner,state,{companyId:src.company}).warehouse;
+  assert.equal(w.events.length,4);assert.equal(w.bins[0].bin,'B-09');assert.equal(w.traces[0].releaseNote,'Retain as history');assert.equal(w.reorder[0].suggested,12);assert.equal(w.picks.length,0);
+  assert.deepEqual(state.companies[0].moves,src.c.moves);
+});

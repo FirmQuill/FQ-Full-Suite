@@ -1,9 +1,9 @@
-import {newVault,apply,validateState,recommended,modules,accounts,manualAccounts,outstanding,sum,cents,dollars,check,statements} from './core.mjs';
+import {newVault,apply,validateState,recommended,modules,accounts,manualAccounts,outstanding,availableDocumentLines,sum,cents,dollars,check,statements} from './core.mjs';
 import {hasVault,createVault,openVault,restoreVault,MAX_BACKUP_BYTES} from './vault.mjs';
 import {sampleVault} from './sample.mjs';
 import {previewBankCsv,exportBankCsv,reconcileBankStatement} from './interop.mjs';
 import {states,ficaPreview,incomeTaxPreview,payrollGate} from './payroll-rules.mjs';
-import {esc,btn,money,table,panel,pretty,code,choices,input,options,select,dateField,mapping,acts,brand,home,contacts,commerceView,jobs,warehouse,assetsView,accounting,banks,reportView,payrollView,history,ref,title,line} from './views.mjs';
+import {esc,btn,money,table,panel,pretty,code,choices,input,options,select,dateField,mapping,acts,brand,home,contacts,commerceView,jobs,warehouse,assetsView,accounting,banks,reportView,payrollView,history,ref,title,line,documentEditor,handleDocumentLine,parseDocumentLines,documentLineSelection,parseSelectedDocumentLines,commercialLineTable} from './views.mjs';
 
 const app=document.querySelector('#app'),dialog=document.querySelector('dialog'),notice=document.querySelector('#notice');
 let session=null,companyId='',page='Overview',menu=false,existing=false,busy=false,epoch=0,lockTimer,lastActivity=0;
@@ -62,6 +62,7 @@ function formModal(heading,fields,submit,handler){
     ev.preventDefault();if(busy||!handler)return;busy=true;const token=epoch,form=ev.target,submitter=ev.submitter;if(submitter)submitter.disabled=true;
     const f=new FormData(form);try{await handler(Object.fromEntries(f),f,form);}catch(err){if(epoch===token)showError(err);}finally{if(epoch===token){busy=false;if(submitter)submitter.disabled=false;}}
   };
+  dialog.onclick=ev=>handleDocumentLine(ev,dialog);
   dialog.onchange=ev=>previewSettings(ev.target.form||dialog.querySelector('form'));
 }
 function download(contents,filename,mime){
@@ -71,7 +72,7 @@ function download(contents,filename,mime){
 function docFields(c,sale){
   const people=c.parties.filter(p=>p.kind===(sale?'Customer':'Vendor'));
   check(people.length&&c.items.length,'Add the contact and an item or service in Directory first.');
-  return select('party',sale?'Customer':'Vendor',mapping(people))+select('item','Item or service',mapping(c.items))+input('qty','Quantity','number',1,'min="1" step="1"')+input('unit','Unit price (USD)','text','','inputmode="decimal"')+input('location','Location','text','Main')+
+  return select('party',sale?'Customer':'Vendor',mapping(people))+documentEditor(c)+
    `<label>Job<select name="job">${options([['','No job'],...mapping(c.jobs)])}</select></label>`;
 }
 function action(type,key){
@@ -106,12 +107,12 @@ function action(type,key){
     case 'time':form('Log time',list('employee','Employee',c.employees)+list('job','Job',c.jobs)+dates+count('minutes','Minutes worked',60),v=>({...v,minutes:Number(v.minutes)}));break;
     case 'approve time':form('Approve time entry',dates,v=>({...v,time:key}),'Approve');break;
     case 'job expense':form('Record cash job expense',list('job','Job',c.jobs)+memo+amount()+dates,v=>({...v,amount:cents(v.amount)}));break;
-    case 'quote':case 'purchase order':form('New '+type,docFields(c,type==='quote')+memo+dates,v=>({...v,qty:Number(v.qty),unit:cents(v.unit)}));break;
+    case 'quote':case 'purchase order':form('New '+type,docFields(c,type==='quote')+memo+dates,(v,f)=>({party:v.party,job:v.job,label:v.label,date:v.date,lines:parseDocumentLines(f)}));break;
     case 'advance':{
       const [parent,step]=key.split('|'),p=c.docs.find(d=>d.id===parent),settles=['collection','payment'].includes(step);
       const info=`<p class="quiet">${esc(code(p))} · ${esc(title(c.parties,p.party))} · ${money(p.total)}</p>`;
-      const credit=step.includes('credit')?'<p class="callout warn">This fully credits the document, returns product stock and records a cash refund for any settled amount. Confirm that the return and refund have occurred.</p>':'';
-      formModal(pretty(step),info+credit+dates+(settles?amount('amount','Settlement amount (USD)',(BigInt(outstanding(c,p))/100n)+'.'+String(outstanding(c,p)%100).padStart(2,'0')):''),'Record '+step,v=>save(step,{...v,label:pretty(step)+' · '+code(p),parent,...(settles?{amount:cents(v.amount)}:{})}));break;
+      const credit=step.includes('credit')?'<p class="callout warn">Credits reduce the open balance first and record a cash refund for any excess; selected products return to or leave stock. Record only completed returns and refunds.</p>':'';
+      formModal(pretty(step),info+credit+dates+documentLineSelection(c,p,step,availableDocumentLines(c,p,step))+(settles?amount('amount','Settlement amount (USD)',(BigInt(outstanding(c,p))/100n)+'.'+String(outstanding(c,p)%100).padStart(2,'0')):''),'Record '+step,(v,f)=>save(step,{date:v.date,label:pretty(step)+' · '+code(p),parent,...(settles?{amount:cents(v.amount)}:parseSelectedDocumentLines(f))}));break;
     }
     case 'transfer':case 'adjust':{
       const adjustment=type==='adjust';const fields=(adjustment?select('direction','Direction',[['adjust in','Increase'],['adjust out','Decrease']]):'')+list('item','Stock item',products)+input('location','Source location','text','Main')+(adjustment?amount('amount','Total value for increase (USD)','0.00'):input('to','Destination location'))+count('qty','Units')+memo+dates;
@@ -158,7 +159,7 @@ function action(type,key){
 function detail(c,id){
   const e=ref(c,id),d=c.docs.find(x=>x.id===id),j=c.entries.filter(j=>j.source===id),files=c.attachments.filter(a=>a.source===id);
   const evidence=d?`<section class="printable"><div class="printbrand"><img src="./mark.svg" alt="">FirmQuill</div><p><b>${esc(c.name)}</b></p><p>${esc(d.date)} · ${esc(title(c.parties,d.party))}</p>`+
-    (['payment','collection'].includes(d.kind)?line('Amount settled',d.total):table(['Item or service','Units','Unit price','Document total'],[[esc(title(c.items,d.item)),d.qty,money(d.unit),money(d.total)]]))+'</section>'+
+    (['payment','collection'].includes(d.kind)?line('Amount settled',d.total):commercialLineTable(c,d))+'</section>'+
     btn('print document','Print document')+
     (d.parent?btn('detail','View source '+code(ref(c,d.parent)),d.parent):''):'';
   formModal(code(e)+' · '+pretty(e.kind),`<p>${esc(e.date)} · ${esc(e.label)}</p><p class="small quiet source">${esc(e.id)}</p>${evidence}`+

@@ -1,3 +1,4 @@
+import {portableWarehouseMetadata} from './warehouse-planning.mjs';
 // Owner-only Full Suite -> Lite projection. Call only after the existing export
 // permission check. Platform account IDs, grants and ACLs are never portable.
 import {validateState} from './shared/core.mjs';
@@ -46,7 +47,7 @@ export function portableDeskState(db,state){
   }
   if(personnelRecords)warn('Personnel-only department records remain in the Full Suite database and are excluded from the Lite portable snapshot.');
   const unitMap=new Map();
-  for(const u of unitRows){const id=u.sourceLiteId||u.sourceOwnerRecord?.id||u.id;unitMap.set(u.id,id);const old=original?.units.find(x=>x.id===id);const related=movementRows.filter(m=>m.unitId===u.id),safe={id,unitId:u.identifier,name:u.name,kind:u.kind==='pallet'?'Pallet':'Asset',location:u.location,status:({'active':'Available','in-transit':'In transit','quarantine':'Hold','retired':'Retired'})[u.status]||'Available',contents:contents(u.contents),fixedAsset:u.fixedAssetId||'',version:u.version||1,history:related.map(m=>m.sourceHistory?{...clone(m.sourceHistory),actor:'owner'}:{id:m.id,date:date(m.date),kind:m.kind,detail:([m.from&&m.to?m.from+' → '+m.to:'',m.note].filter(Boolean).join('; ')||m.kind).slice(0,500),actor:'owner',before:contents(m.before),after:contents(m.after),stockSources:clone(m.stockSources||[]),provenance:{edition:'Full Suite',actorName:name(m.actor),sourceNote:m.note||''}})};
+  for(const u of unitRows){const id=u.sourceLiteId||u.sourceOwnerRecord?.id||u.id;unitMap.set(u.id,id);const old=original?.units.find(x=>x.id===id);const related=movementRows.filter(m=>m.unitId===u.id),safe={id,unitId:u.identifier,name:u.name,kind:u.kind==='pallet'?'Pallet':'Asset',location:u.location,locationEpoch:u.locationEpoch||0,status:({'active':'Available','in-transit':'In transit','quarantine':'Hold','retired':'Retired'})[u.status]||'Available',contents:contents(u.contents),fixedAsset:u.fixedAssetId||'',version:u.version||1,history:related.map(m=>m.sourceHistory?{...clone(m.sourceHistory),actor:'owner'}:{id:m.id,date:date(m.date),kind:m.kind,detail:([m.from&&m.to?m.from+' → '+m.to:'',m.note].filter(Boolean).join('; ')||m.kind).slice(0,500),actor:'owner',before:contents(m.before),after:contents(m.after),stockSources:clone(m.stockSources||[]),provenance:{edition:'Full Suite',actorName:name(m.actor),sourceNote:m.note||''}})};
    if(!safe.history.length&&old)safe.history=clone(old.history);if(!safe.history.length)safe.history=[{id:'portable-'+id,date:date(u.lastDate,date(u.created,'1970-01-01')),kind:'Imported',detail:'Full Suite tracking state exported; no movement records were available.',actor:'owner'}];
    if(safe.contents.length>100){d.units=d.units.filter(x=>x.id!==id);archive.units.push(safe);warn('Tracked units with more than 100 content rows are preserved in the transfer archive because Lite supports at most 100 per unit.');continue;}put(d.units,safe);
   }
@@ -61,6 +62,12 @@ export function portableDeskState(db,state){
    // Original imported count IDs and observations are preserved, while SQL state
    // wins for subsequent Full Suite corrections or reviews.
    put(d.counts,{...old,...safe});
+  }
+  if(exists(db,'warehouse_metadata')&&exists(db,'warehouse_plans')){
+    const w=portableWarehouseMetadata(db,c.id,unitMap,new Set(d.units.map(u=>u.id)));
+    if(w.data.events.length||w.omitted)d.warehouse=w.data;
+    if(w.omitted)warn('Warehouse metadata for units that cannot fit in Lite remains in Full Suite. Use the Full Suite backup to retain it.');
+    if(w.plans)warn('Shared pick lists and scheduled auditor assignments remain in Full Suite and are not portable to Lite.');
   }
   if(sessionRows.some(s=>s.expected.length>1))warn('Multi-unit Full Suite count sessions are split into one owner-operated Lite count per unit; the original session ID and name remain in provenance.');
   if(original?.transfer?.archive)for(const [key,list] of Object.entries(original.transfer.archive))if(Array.isArray(list))for(const r of list)if(!archive[key]?.some(x=>x.id===r.id)){(archive[key]??=[]).push(clone(r));}

@@ -1,3 +1,4 @@
+import {initializeWarehousePlanning,planningView,planningRights,planningCommand,plannedCount,writePlannedCount} from './warehouse-planning.mjs';
 import {randomUUID,createHash} from 'node:crypto';
 import {apply,position,validateState} from './shared/core.mjs';
 
@@ -54,6 +55,7 @@ function movement(db,user,company,row,kind,when,from,to,prior,next,note,stockSou
 function log(db,user,company,kind,id){db.prepare('INSERT INTO audit(at,actor,companyId,kind,detail) VALUES(?,?,?,?,?)').run(now(),user.id,company,kind,id);}
 
 export function initializeAssets(db){
+  initializeWarehousePlanning(db);
   db.exec(`CREATE TABLE IF NOT EXISTS asset_workspace_grants(company TEXT NOT NULL,account TEXT NOT NULL REFERENCES accounts(id),rights TEXT NOT NULL,PRIMARY KEY(company,account));
     CREATE TABLE IF NOT EXISTS tracked_units(company TEXT NOT NULL,id TEXT NOT NULL,identifier TEXT NOT NULL COLLATE NOCASE,body TEXT NOT NULL,version INTEGER NOT NULL,PRIMARY KEY(company,id),UNIQUE(company,identifier));
     CREATE TABLE IF NOT EXISTS asset_movements(company TEXT NOT NULL,id TEXT PRIMARY KEY,unit TEXT NOT NULL,body TEXT NOT NULL);
@@ -74,13 +76,15 @@ export function assetsView(db,user,state,{companyId,auditOnly=false}={}){
   const book=bookFor(state,selected),rights=assetRights(db,user,selected);
   check(mayView(rights),'Asset workspace unavailable.',403);
   if(auditOnly)check(rights.includes('audit')||rights.includes('approve'),'Audit portal access required.',403);
-  const rows=units(db,selected),sessions=db.prepare('SELECT body,version FROM asset_count_sessions WHERE company=? ORDER BY rowid DESC').all(selected).map(decode);
+  const rows=units(db,selected),sessions=db.prepare('SELECT body,version FROM asset_count_sessions WHERE company=? ORDER BY rowid DESC').all(selected).map(decode).filter(r=>!r.scheduleId||r.createdBy===user.id||rights.includes('approve')||(!auditOnly&&rights.includes('manage')));
   const owner=freshAccount(db,user,selected).role==='owner';
   // Stock snapshots are integrity controls, not information needed to count a
   // pallet. Cost values remain unavailable to observation-only audit accounts.
   for(const row of [...rows,...sessions])if(!owner)delete row.sourceOwnerRecord;
   if(!rights.includes('approve'))for(const row of sessions)for(const snapshot of [...row.expected,...row.observations,...(row.observationHistory||[])])if(snapshot.stock)snapshot.stock=snapshot.stock.map(({value,...quantity})=>quantity);
-  return {companies:available.map(({id,name})=>({id,name})),companyId:selected,rights,units:rows,sessions,
+  const planningAccounts=rights.includes('manage')&&!auditOnly?db.prepare("SELECT id,name,role,assignments FROM accounts WHERE active=1 AND role!='worker'").all()
+    .filter(r=>(r.role==='owner'||JSON.parse(r.assignments).includes(selected))&&assetRights(db,{id:r.id},selected).includes('audit')).map(({id,name})=>({id,name})):[];
+  return {warehouse:planningView(db,book,rows,{user,rights,auditOnly,accounts:planningAccounts}),companies:available.map(({id,name})=>({id,name})),companyId:selected,rights,units:rows,sessions,
     movements:db.prepare('SELECT body FROM asset_movements WHERE company=? ORDER BY rowid DESC').all(selected).map(r=>JSON.parse(r.body)),
     items:book.items.filter(i=>i.kind==='Product').map(({id,name})=>({id,name})),fixedAssets:book.assets.map(({id,name})=>({id,name})),
     grants:owner&&!auditOnly?db.prepare('SELECT account,rights FROM asset_workspace_grants WHERE company=?').all(selected).map(r=>({accountId:r.account,rights:JSON.parse(r.rights)})):[],
@@ -90,7 +94,7 @@ export function assetsView(db,user,state,{companyId,auditOnly=false}={}){
 export function assetsCommand(db,user,state,action){
   check(action&&typeof action==='object','Provide an asset action.');
   const company=action.companyId,book=bookFor(state,company),account=freshAccount(db,user,company);
-  const required={register:'manage',move:'manage',contents:'manage','count-start':'audit','count-observe':'audit','count-submit':'audit','count-review':'approve'}[action.type];
+  const required={register:'manage',move:'manage',contents:'manage','count-start':'audit','count-observe':'audit','count-submit':'audit','count-review':'approve'}[action.type]||Object.hasOwn(planningRights,action.type)&&planningRights[action.type];
   if(required)requireRight(db,user,company,required);
   if(action.type==='grant')check(account.role==='owner','Owner access required.',403);
   check(typeof action.requestId==='string'&&/^[a-zA-Z0-9_-]{8,120}$/.test(action.requestId),'A stable request ID is required.');
@@ -128,7 +132,7 @@ export function assetsCommand(db,user,state,action){
         if(stockSources.length){validateState(next);nextState=next;}
       }
       movement(db,user,company,row,'moved',when,row.location,location,row.contents,row.contents,note,stockSources,status);
-      saveUnit(db,company,{...row,location,status,lastDate:when,version:row.version+1});result={unitId:row.id,stockSources};
+      saveUnit(db,company,{...row,location,status,locationEpoch:(row.locationEpoch||0)+(location!==row.location?1:0),lastDate:when,version:row.version+1});result={unitId:row.id,stockSources};
     }else if(action.type==='contents'){
       requireRight(db,user,company,'manage');const row=unit(db,company,action.unitId);version(row,action.version);
       const when=date(action.date),rows=contents(book,action.contents||[]),note=text(action.note,1000);
@@ -136,10 +140,17 @@ export function assetsCommand(db,user,state,action){
       check(JSON.stringify(rows)!==JSON.stringify(row.contents),'Change at least one packed quantity.');allocationCheck(db,book,row.location,rows,row.id);
       movement(db,user,company,row,'packed-unpacked',when,row.location,row.location,row.contents,rows,note);
       saveUnit(db,company,{...row,contents:rows,lastDate:when,version:row.version+1});result={unitId:row.id};
-    }else if(action.type==='count-start'){
-      requireRight(db,user,company,'audit');check(Array.isArray(action.unitIds)&&action.unitIds.length&&action.unitIds.length<=200&&new Set(action.unitIds).size===action.unitIds.length,'Choose 1–200 different tracked assets.');
-      const when=date(action.date),expected=action.unitIds.map(id=>{const row=unit(db,company,id);check(when>=row.lastDate,'Count date precedes asset movement history.',409);return {unitId:row.id,identifier:row.identifier,version:row.version,location:row.location,status:row.status,contents:structuredClone(row.contents),stock:stockSnapshot(book,row.location,row.contents)};});
-      const row={id:randomUUID(),name:text(action.name),date:when,status:'open',created:now(),createdBy:user.id,expected,observations:[],observationHistory:[],version:1};saveSession(db,company,row);result={sessionId:row.id};
+    }else if(Object.hasOwn(planningRights,action.type)&&action.type!=='warehouse-count-start'){
+      result=planningCommand(db,book,units(db,company),action,{actor:user.id,newId:randomUUID,account:id=>{
+        const target=freshAccount(db,{id},company);return {...target,name:db.prepare('SELECT name FROM accounts WHERE id=?').get(id).name};
+      },accountRights:id=>assetRights(db,{id},company)});
+    }else if(action.type==='count-start'||action.type==='warehouse-count-start'){
+      requireRight(db,user,company,'audit');
+      const scheduled=action.type==='warehouse-count-start'?plannedCount(db,book,units(db,company),action,user.id):null;
+      const ids=scheduled?.unitIds||action.unitIds;
+      check(Array.isArray(ids)&&ids.length&&ids.length<=200&&new Set(ids).size===ids.length,'Choose 1–200 different tracked assets.');
+      const when=date(scheduled?.date||action.date),expected=ids.map(id=>{const row=unit(db,company,id);check(when>=row.lastDate,'Count date precedes asset movement history.',409);return {unitId:row.id,identifier:row.identifier,version:row.version,location:row.location,status:row.status,contents:structuredClone(row.contents),stock:stockSnapshot(book,row.location,row.contents)};});
+      const row={id:randomUUID(),name:text(scheduled?.name||action.name),date:when,status:'open',created:now(),createdBy:user.id,expected,observations:[],observationHistory:[],version:1,...(scheduled?{scheduleId:scheduled.row.id}:{})};saveSession(db,company,row);if(scheduled)writePlannedCount(db,company,scheduled.row,user.id,row.id);result={sessionId:row.id};
     }else if(action.type==='count-observe'){
       requireRight(db,user,company,'audit');const row=session(db,company,action.sessionId);version(row,action.version);
       check(row.status==='open','This count was already submitted.',409);
@@ -183,7 +194,7 @@ export function assetsCommand(db,user,state,action){
       }
       saveSession(db,company,{...row,status:action.decision==='approve'?'approved':'rejected',reviewed:now(),reviewedBy:user.id,reason,corrections,adjustmentDate:action.decision==='approve'?action.date:null,version:row.version+1});result={sessionId:row.id,corrections};
     }else check(false,'Unknown asset operation.');
-    log(db,user,company,'asset '+action.type,result.unitId||result.sessionId||result.accountId||'');
+    log(db,user,company,'asset '+action.type,result.unitId||result.sessionId||result.accountId||result.planId||result.metadataId||'');
     db.prepare('INSERT INTO asset_commands VALUES(?,?,?,?,?)').run(company,user.id,action.requestId,fingerprint,JSON.stringify(result));
     return {result,...(nextState?{state:nextState}:{})};
   });

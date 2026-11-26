@@ -1,3 +1,5 @@
+import {catchUpPlanning,localPlanningDay,planningCommand,planningOf,planningSummary} from './shared/planning-core.mjs';
+import {initializeManualPayroll,manualPayrollView,manualPayrollStoreCommand,manualPayrollPortableState} from './manual-payroll-store.mjs';
 import {portableDeskState,portableDeskReport} from './portable-desk.mjs';
 import {ownerDeskMigrationReports} from './desk-migration.mjs';
 import {departmentView,departmentCommand} from './departments.mjs';
@@ -19,12 +21,13 @@ import {migrationView,migrationCommand} from './migration.mjs';
 import {createAgentService} from './agent-access.mjs';
 import {createSupportService} from './support.mjs';
 import {createSetupPackage} from './setup-package.mjs';
+import {initializeTeamWorkflows,teamPages,purchasingView,purchasingCommand,myLeave,workerLeaveCommand,reviewLeave,reviewLeaveCommand} from './team-workflows.mjs';
 
 const token=()=>randomBytes(32).toString('base64url');
 const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
-const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs']);
-const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','audit.html']);
+const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs']);
+const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','audit.html']);
 const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
@@ -38,8 +41,10 @@ async function jsonBody(req,max){
   return data;
 }
 function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHeader('Content-Type')||'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
-async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={}}){
+async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},planningClock=localPlanningDay,planningIntervalMs=60_000}){
   const db=openStore(database),sessions=new Map(),attempts=new Map();
+  initializeTeamWorkflows(db);
+  initializeManualPayroll(db);
   if(termsVersion===legacyAgreement.version&&termsHash===legacyAgreement.hash){
     db.prepare('INSERT OR IGNORE INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) SELECT account_id,version,?,accepted_at FROM terms_acceptances WHERE version=?').run(termsHash,termsVersion);
   }
@@ -47,7 +52,9 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
   const support=createSupportService(supportOptions);
   const identity=createIdentityService({db,database,readBooks,saveBooks,passwordHash,putUser,...identityOptions});
   const dummyHash=await passwordHash(token()),servers=[];
-  let expensive=0;
+  let expensive=0,planningTimer;
+  const refreshRecurring=()=>tx(db,()=>{const next=catchUpPlanning(readBooks(db).state,planningClock());if(next.generated)saveBooks(db,next.state);});
+  const runRecurring=()=>{try{refreshRecurring();}catch{process.emitWarning('FirmQuill could not refresh recurring drafts. Review the workspace and retry.');}};
   async function limited(fn){requireThat(expensive<4,429,'Server busy. Try again shortly.');expensive++;try{return await fn();}finally{expensive--;}}
   const storeSession=(id,s)=>{for(const [k,v] of sessions)if(v.until<=Date.now()||v.absolute<=Date.now())sessions.delete(k);
     requireThat(sessions.size<10000,429,'Session capacity reached.');sessions.set(id,s);};
@@ -60,20 +67,20 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     session.until=Date.now()+30*60000;return u;
   }
   function workspacePagesFor(user,state){
-    if(user.role==='owner')return ['Departments','Project tracker','Assets & pallets','Inventory audit'];
+    if(user.role==='owner')return ['Departments','Project tracker','Assets & pallets','Inventory audit',...teamPages(db,user)];
     const pages=[],departments=departmentView(db,user,state),projects=projectView(db,user,state);
     if(departments.workspaces.length)pages.push('Departments');
     if(projects.projects.length||departments.workspaces.some(w=>w.rights.includes('manage')))pages.push('Project tracker');
     const rights=new Set();for(const c of state.companies){try{for(const right of assetsView(db,user,state,{companyId:c.id}).rights)rights.add(right);}catch{}}if(['view','manage'].some(r=>rights.has(r)))pages.push('Assets & pallets');
     if(['audit','approve'].some(r=>rights.has(r)))pages.push('Inventory audit');
-    return pages;
+    return [...pages,...teamPages(db,user)];
   }
   function snapshot(user,s,extras={}){
     if(!hasAccepted(user))return {termsRequired:termsVersion,csrf:s.csrf};
     const {state,revision}=readBooks(db);
     const features=s.portal==='worker'?workerFeatures(db,user):[];
     const time=s.portal==='worker'?workerView(db,user,state):null;
-    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null}:
+    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null,leave:features.includes('Time off')?myLeave(db,user,state):null}:
       {user:{...publicUser(user),areas:accountAreas(db,user),workspaces:workspacePagesFor(user,state)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
   function hasAccepted(user){return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);}
@@ -166,6 +173,21 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(path==='/api/support/search'&&!post){send(res,200,await support.search(url.searchParams.get('q')||''));return;}
         if(path==='/api/support/article'&&!post){send(res,200,await support.article(url.searchParams.get('id')));return;}
         if(path==='/api/support/answer'&&post){const p=await jsonBody(req,4096);send(res,200,await support.answer(p.question));return;}
+        if(portal==='main'&&path==='/api/planning'){
+          owner(u);
+          if(post){
+            const p=await jsonBody(req,64*1024);requireThat(p.action&&typeof p.action==='object',400,'Choose a planning action.');
+            const count=tx(db,()=>{const active=userFor(s,portal);owner(active);const {revision,state}=readBooks(db);revisionCheck(revision,p.revision);
+              const next=planningCommand(state,p.companyId,p.action,planningClock());saveBooks(db,next.state);
+              audit(db,active,p.companyId,'planning '+p.action.type,'Company planning workflow');return next.generated;});
+            send(res,200,snapshot(userFor(s,portal),s,{generatedDrafts:count}));return;
+          }
+          const {state}=readBooks(db),companyId=url.searchParams.get('companyId');
+          const c=state.companies.find(c=>c.id===companyId);requireThat(c,404,'Company unavailable.');
+          const rows=departmentView(db,u,state,{companyId}).workspaces.flatMap(w=>(w.records||[]).filter(x=>x.kind==='contract'));
+          const today=planningClock(),extra=rows.map(r=>({id:r.sourceLiteId||r.id,name:r.title,date:(r.contractStatus||r.sourceStatus||(r.status==='done'?'Closed':'Active'))==='Active'?r.dueDate:''}));
+          send(res,200,{day:today,data:planningOf(c),summary:planningSummary(c,today,extra)});return;
+        }
         if(portal==='main'&&path==='/api/migration'){
           const result=post?migrationCommand(db,userFor(s,portal),await jsonBody(req,4*1024*1024)):migrationView(db,u);
           send(res,200,result.packageRequested?createSetupPackage(result.dataset,result.approval):result);return;
@@ -173,6 +195,18 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(portal==='main'&&path==='/api/agent-admin'&&!post){send(res,200,agents.view(u));return;}
         if(portal==='main'&&path==='/api/agent-admin/action'&&post){const p=await jsonBody(req,64*1024);send(res,200,agents.command(userFor(s,portal),p));return;}
         const {state:workforceState}=readBooks(db),scope={companyId:url.searchParams.get('companyId')||undefined,employeeId:url.searchParams.get('employeeId')||undefined};
+        if(portal==='main'&&['/api/team/purchasing','/api/team/time-off'].includes(path)){
+          const purchasing=path.endsWith('/purchasing');
+          if(!post){send(res,200,purchasing?purchasingView(db,u,workforceState,scoped(u,workforceState,db),scope.companyId):reviewLeave(db,u,workforceState,scope.companyId));return;}
+          const p=await jsonBody(req,24*1024);requireThat(p.action&&typeof p.action==='object',400,'Specify a team request action.');
+          const result=tx(db,()=>{const active=userFor(s,portal),{state}=readBooks(db);return purchasing?purchasingCommand(db,active,state,scoped(active,state,db),p.action):reviewLeaveCommand(db,active,state,p.action);});
+          send(res,200,result);return;
+        }
+        if(portal==='worker'&&path==='/api/team/my-time-off'&&post){
+          const p=await jsonBody(req,8192);requireThat(p.action&&typeof p.action==='object',400,'Specify a time-off action.');
+          const active=userFor(s,portal);tx(db,()=>workerLeaveCommand(db,active,readBooks(db).state,p.action));
+          send(res,200,snapshot(active,s));return;
+        }
         if(portal==='worker'&&path==='/api/worker-brand/logo'&&!post){
           const logo=workerBrandLogo(db,workforceState,u.assignments[0]);requireThat(logo,404,'Company logo unavailable.');res.writeHead(200,{'Content-Type':logo.mime});res.end(logo.bytes);return;
         }
@@ -209,6 +243,12 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         }
         if(portal==='main'&&path==='/api/identity'&&!post){requireArea(db,u,'Identity connectors');send(res,200,identity.view(u,workforceState,scope));return;}
         if(portal==='main'&&path==='/api/identity/action'&&post){requireArea(db,u,'Identity connectors');const p=await jsonBody(req,2*1024*1024);const result=await identity.command(u,workforceState,p.action);send(res,200,{result});return;}
+        if(portal==='main'&&path==='/api/manual-payroll'){
+          if(!post){send(res,200,manualPayrollView(db,u,workforceState,scope.companyId));return;}
+          const input=await jsonBody(req,64*1024);
+          const result=tx(db,()=>manualPayrollStoreCommand(db,userFor(s,portal),readBooks(db).state,scope.companyId,input));
+          send(res,200,result);return;
+        }
         if(portal==='main'&&path==='/api/payroll/deductions'&&!post){requireArea(db,u,'Payroll');send(res,200,{deductions:effectivePayrollDeductions(db,u,workforceState,scope.companyId,url.searchParams.get('payDate'))});return;}
         if(portal==='main'&&path==='/api/admin/employee-erp'&&post){
           owner(u);const p=await jsonBody(req,16384),c=workforceState.companies.find(c=>c.id===p.companyId);
@@ -255,7 +295,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           owner(active());
           if(path==='/api/transfer/export'){
             const {state}=readBooks(db);requireThat(state.companies.length,400,'Create or import books first.');
-            const portable=portableDeskState(db,state),deskReport=portableDeskReport(portable);const result=await limited(()=>exportLite(portable,p.password));owner(active());tx(db,()=>audit(db,u,'','export','Encrypted owner snapshot'));send(res,200,{...result,deskReport});return;
+            const portable=manualPayrollPortableState(db,portableDeskState(db,state)),deskReport=portableDeskReport(portable);const result=await limited(()=>exportLite(portable,p.password));owner(active());tx(db,()=>audit(db,u,'','export','Encrypted owner snapshot'));send(res,200,{...result,deskReport});return;
           }
           requireThat(['/api/transfer/preview','/api/transfer/import'].includes(path),404,'Endpoint unavailable.');
           assertEmptyDestination(readBooks(db).state);
@@ -284,8 +324,9 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
       await new Promise((yes,no)=>server.once('error',no).listen(port,'127.0.0.1',yes));servers.push(server);
     }
   }catch(e){for(const srv of servers)srv.close();db.close();throw e;}
+  runRecurring();planningTimer=setInterval(runRecurring,planningIntervalMs);planningTimer.unref();
   return {mainUrl:'http://127.0.0.1:'+servers[0].address().port,workerUrl:'http://127.0.0.1:'+servers[1].address().port,
-    async close(){await Promise.all(servers.map(srv=>new Promise(r=>{srv.close(r);srv.closeIdleConnections();})));sessions.clear();db.close();}};
+    async close(){clearInterval(planningTimer);await Promise.all(servers.map(srv=>new Promise(r=>{srv.close(r);srv.closeIdleConnections();})));sessions.clear();db.close();}};
 }
 
 export {createSuite};

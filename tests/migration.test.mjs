@@ -7,7 +7,7 @@ import {spawnSync} from 'node:child_process';
 import {fileURLToPath} from 'node:url';
 import {openStore,putUser,passwordHash,safeUser,readBooks,tx,saveBooks} from '../store.mjs';
 import {sampleVault} from '../shared/sample.mjs';
-import {migrationCommand,migrationView,parseMigrationCsv} from '../migration.mjs';
+import {migrationCommand,migrationView,parseMigrationCsv,quickBooksIifContacts} from '../migration.mjs';
 import {createSetupPackage,inspectSetupPackage,initializeSetupPackage} from '../setup-package.mjs';
 import {fictionalBatches,fictionalSources} from '../fixtures/migration-fixture.mjs';
 
@@ -18,7 +18,7 @@ test('fictional multiple-source mapped onboarding reconciles and preserves histo
  const {db,user,preview,pkg,dir}=await approvedFixture(t);assert.equal(preview.counts.input,10);assert.equal(preview.counts.accepted,10);assert.equal(preview.counts.error,0);assert.equal(preview.reconciliation.independentlyVerified,true);assert.equal(preview.reconciliation.balanced,true);assert.equal(preview.reconciliation.trialDifferenceCents,0);assert.equal(preview.historicalCount,2);assert.deepEqual(readBooks(db).state.companies,[],'staging never changes operator books');
  const inspected=inspectSetupPackage(pkg.packageText);assert.equal(inspected.digest,pkg.digest);assert.match(inspected.gettingStarted,/FICTIONAL Multi Source/);const destination=join(dir,'customer.sqlite');await initializeSetupPackage({packageText:pkg.packageText,destination,confirmedDigest:pkg.digest});
  const customer=openStore(destination);try{const c=readBooks(customer).state.companies[0];assert.equal(c.parties.length,2);assert.equal(c.employees.length,0);assert.equal(c.time.length,0);assert.equal(customer.prepare('SELECT count(*) AS n FROM migration_historical').get().n,2);assert.equal(customer.prepare('SELECT count(*) AS n FROM accounts').get().n,0);assert.equal(customer.prepare('SELECT count(*) AS n FROM migration_setup_receipts').get().n,1);}finally{customer.close();}
- const bytes=await readFile(destination);await assert.rejects(initializeSetupPackage({packageText:pkg.packageText,destination,confirmedDigest:pkg.digest}),/already exists/);assert.deepEqual(await readFile(destination),bytes,'restart/retry cannot overwrite existing workspace');assert.equal(migrationView(db,user).coverage.nativeAdapters.length,0);
+ const bytes=await readFile(destination);await assert.rejects(initializeSetupPackage({packageText:pkg.packageText,destination,confirmedDigest:pkg.digest}),/already exists/);assert.deepEqual(await readFile(destination),bytes,'restart/retry cannot overwrite existing workspace');assert.deepEqual(migrationView(db,user).coverage.nativeAdapters,['quickbooks-desktop-iif-contacts']);
 });
 test('stable source IDs deduplicate, changed values conflict, cross-source duplicates surface and exclusions permit reviewed retry',async t=>{
  const f=await fixture(t);f.stage(fictionalBatches[1]);let p=f.stage(fictionalBatches[1]);assert.equal(p.counts.accepted,1);assert.equal(p.counts.duplicate,1);
@@ -50,4 +50,37 @@ test('host package preview is read-only and noninteractive setup cancellation le
  const preview=run('setup-preview');assert.equal(preview.status,0,preview.stderr);assert.equal(JSON.parse(preview.stdout).digest,pkg.digest);await assert.rejects(stat(destination),{code:'ENOENT'});
  const cancel=run('setup');assert.equal(cancel.status,1);assert.match(cancel.stderr,/interactive terminal/);await assert.rejects(stat(destination),{code:'ENOENT'});await initializeSetupPackage({packageText:pkg.packageText,destination,confirmedDigest:pkg.digest});
  const occupied=run('setup');assert.equal(occupied.status,1);assert.match(occupied.stderr,/Existing workspaces/);const customer=openStore(destination);try{assert.equal(customer.prepare('SELECT count(*) AS n FROM migration_setup_receipts').get().n,1);}finally{customer.close();}
+});
+
+const groupedMapping={sourceId:'Document',lineId:'Line',contactRef:'Contact',date:'Date',itemName:'Service',quantity:'Quantity',unitCents:{column:'Unit',transform:'decimalDollars'},discountCents:{column:'Discount',transform:'decimalDollars'},amountCents:{column:'Net',transform:'decimalDollars'},description:'Description'};
+const groupedHeader='Document,Line,Contact,Date,Service,Quantity,Unit,Discount,Net,Description\n';
+const groupedRows=['doc-a,b,c1,2026-11-01,Design work,1,30.00,,30.00,Two extras','doc-a,a,c1,2026-11-01,Planning work,2,40.00,5.00,75.00,Two extras'];
+test('grouped service CSV applies discounts, deduplicates physical order, links payment and reconciles approved setup',async t=>{
+ const f=await fixture(t);f.stage(fictionalBatches[1]);const pay={source:'books',recordType:'payments',csv:'ID,Document,Type,Date,Cents,Description\np1,doc-a,invoices,2026-11-03,2000,Fictional receipt\n',mapping:fictionalBatches[5].mapping};f.stage(pay);
+ let p=f.stage({source:'books',recordType:'invoiceLines',csv:groupedHeader+groupedRows.join('\n')+'\n',mapping:groupedMapping});assert.equal(p.counts.accepted,3);
+ p=f.stage({source:'books',recordType:'invoiceLines',csv:groupedHeader+groupedRows.toReversed().join('\n')+'\n',mapping:groupedMapping});assert.equal(p.counts.duplicate,1);
+ assert.equal(p.reconciliation.acceptedTotalsCents.invoices,10500);assert.equal(p.reconciliation.balances[1100],8500);assert.equal(p.reconciliation.balances[1000],2000);assert.equal(p.reconciliation.balances[4000],-10500);
+ assert.deepEqual(p.outcomes.find(r=>r.recordType==='invoiceLines'&&r.status==='accepted').sourceRows,[2,3]);
+ p=f.call({type:'expectations',runId:f.run.runId,balances:{1000:2000,1100:8500,4000:-10500}});
+ f.call({type:'approve',runId:f.run.runId,previewDigest:p.digest,acceptExceptions:true});
+ const staged=f.call({type:'package',runId:f.run.runId,approvedDigest:p.digest}),pkg=createSetupPackage(staged.dataset,staged.approval),destination=join(f.dir,'grouped.sqlite');
+ await initializeSetupPackage({packageText:pkg.packageText,destination,confirmedDigest:pkg.digest});const actual=openStore(destination);
+ try{const c=readBooks(actual).state.companies[0],inv=c.docs.find(d=>d.kind==='invoice');assert.equal(inv.lines.length,2);assert.deepEqual(inv.lines.map(l=>l.discount),[500,0]);assert.equal(c.docs.find(d=>d.kind==='collection').parent,inv.id);}finally{actual.close();}
+});
+test('wrong amount or duplicate group line blocks entire proposed invoice while other good documents still stage',async t=>{
+ const f=await fixture(t);f.stage(fictionalBatches[1]);
+ const p=f.stage({source:'books',recordType:'invoiceLines',csv:groupedHeader+groupedRows[0].replace('30.00,,30.00','30.00,,29.00')+'\n'+groupedRows[1]+'\n'+groupedRows[1].replace('doc-a,a,','doc-b,a,')+'\n',mapping:groupedMapping});
+ assert.equal(p.counts.error,1);assert.deepEqual(p.unresolved[0].sourceRows,[2,3]);assert.equal(p.reconciliation.balances[1100],7500);assert.equal(p.counts.accepted,2);assert.throws(()=>f.stage({source:'books',recordType:'invoiceLines',csv:groupedHeader+groupedRows[0].slice('doc-a'.length)+'\n',mapping:groupedMapping}),/stable document source ID/);
+});
+test('native QuickBooks export layout stages only flat contact names from REFNUM or a deliberate crosswalk',async t=>{
+ const f=await fixture(t);
+ const iif='!HDR\tPROD\tVER\tREL\tIIFVER\tDATE\tTIME\r\nHDR\tQuickBooks Premier\tVersion 20.0D\tRelease R6\t1\t1/1/2010\t794236875\r\n!CUST\tNAME\tBADDR1\tBADDR2\tREFNUM\r\nCUST\t"Example, Customer"\tDo not stage this address\t\t120\r\nCUST\tSynthetic Other\t\t\t\r\nCUST\tSynthetic Other:Job\t\t\t180\r\n';
+ const profile={type:'stage',runId:f.run.runId,source:fictionalSources.books,recordType:'contacts',nativeProfile:'quickbooks-desktop-iif-contacts',contactKind:'Customer',csv:iif,iifCrosswalk:{'Synthetic Other':'customer-synthetic-2'}};
+ const p=f.call(profile);assert.equal(p.counts.accepted,2);assert.equal(p.counts.error,1);assert.match(p.unresolved[0].detail,/Hierarchical/);
+ assert.ok(!JSON.stringify(p).includes('Do not stage this address'));
+ assert.deepEqual(p.outcomes.filter(r=>r.status==='accepted').map(r=>r.sourceIdValue),['qbd-cust-120','customer-synthetic-2']);
+ const missing=quickBooksIifContacts(iif,'Customer');assert.match(missing[1].error,/No stable REFNUM/);
+ const next=f.call(profile);assert.equal(next.counts.duplicate,2);assert.equal(next.liveRecordCounts.contacts,2);
+ assert.throws(()=>quickBooksIifContacts(iif+'!TRNS\tTRNSID\n','Customer'),/combined IIF or transaction/);
+ assert.throws(()=>quickBooksIifContacts(iif,'Vendor'),/one flat vendor list/);
 });

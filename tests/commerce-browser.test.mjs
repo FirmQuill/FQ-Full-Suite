@@ -1,0 +1,44 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import {mkdtemp,rm} from 'node:fs/promises';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
+import {createRequire} from 'node:module';
+import {createSuite} from '../server.mjs';
+import {openStore,tx,passwordHash,putUser,saveBooks} from '../store.mjs';
+import {newVault} from '../shared/core.mjs';
+import {seedFixtureTerms,acceptFixtureBrowser} from './fixture-terms.mjs';
+test('Full Suite browser creates two fulfilled invoices and stages Desktop IIF via its owner portal',{skip:!process.env.FIRMQUILL_BROWSER_EXE},async t=>{
+ const root=await mkdtemp(join(tmpdir(),'fq-commerce-browser-')),database=join(root,'suite.sqlite'),password='Fictional browser commerce 2026!';
+ let suite,browser;
+ t.after(async()=>{await browser?.close();await suite?.close();await rm(root,{recursive:true,force:true});});
+ const db=openStore(database);
+ try{tx(db,()=>saveBooks(db,newVault('Fictional Full Commerce')));const hash=await passwordHash(password);tx(db,()=>putUser(db,null,{name:'Fictional Owner',username:'fictional-owner',role:'owner',assignments:[]},hash,{bootstrap:true}));seedFixtureTerms(db);}finally{db.close();}
+ suite=await createSuite({database,mainPort:0,workerPort:0});
+ const {chromium}=createRequire(import.meta.url)(process.env.FIRMQUILL_PLAYWRIGHT||'playwright');browser=await chromium.launch({executablePath:process.env.FIRMQUILL_BROWSER_EXE,headless:true});
+ const p=await browser.newPage({viewport:{width:1400,height:970}}),errors=[];p.on('pageerror',e=>errors.push(e.message));p.setDefaultTimeout(12000);
+ await p.goto(suite.mainUrl);await p.locator('#login [name=username]').fill('fictional-owner');await p.locator('#login [name=password]').fill(password);await p.locator('#login button').click();await acceptFixtureBrowser(p);await p.locator('.toolbar').waitFor();
+ const click=(act,key)=>p.locator(`[data-act="${act}"]${key?`[data-key="${key}"]`:''}`).first().click();
+ const modal=p.locator('dialog[open]');const submit=async()=>{await modal.locator('[type=submit]').click();await modal.waitFor({state:'hidden'});};
+ await click('nav','Directory');await click('contact');await modal.locator('[name=name]').fill('Fictional Buyer');await submit();
+ for(const name of ['Design service','Planning service']){await click('item');await modal.locator('[name=name]').fill(name);await modal.locator('[name=kind]').selectOption('Service');await submit();}
+ await click('nav','Sales');await click('quote');
+ await modal.locator('[name=unit]').fill('50.00');await modal.locator('[name=qty]').fill('3');await modal.locator('[name=discount]').fill('2.00');
+ await modal.getByRole('button',{name:'Add item line'}).click();assert.equal(await modal.locator('.document-line').count(),2);
+ await modal.locator('[name=item]').nth(1).selectOption({label:'Planning service'});await modal.locator('[name=unit]').nth(1).fill('25.00');
+ await modal.locator('[name=label]').fill('Two service lines');await submit();
+ await p.getByText('2 item lines',{exact:true}).waitFor();await p.getByRole('button',{name:'Sales order',exact:true}).click();await submit();
+ await p.getByRole('button',{name:'Fulfillment',exact:true}).click();await modal.locator('[name=pick-L1]').fill('1');await modal.locator('[name=pick-L2]').fill('0');await submit();
+ await p.getByRole('button',{name:'Invoice',exact:true}).click();await submit();
+ const invoice=p.getByRole('row').filter({has:p.getByRole('cell',{name:'Invoice',exact:true})}).first();
+ await invoice.locator('[data-act=detail]').click();assert.match(await modal.locator('.printable').innerText(),/Design service[\s\S]*\$49\.33/);await click('cancel');
+ await p.getByRole('button',{name:'Fulfillment',exact:true}).click();await submit();
+ await p.getByRole('button',{name:'Invoice',exact:true}).click();await submit();
+ await p.getByRole('cell',{name:'$123.67',exact:true}).first().waitFor();assert.equal(await p.getByRole('button',{name:'Fulfillment',exact:true}).count(),0);
+ assert.deepEqual(errors,[]);
+ await click('nav','Migration workspace');await click('migration-create');await modal.locator('[name=companyName]').fill('Fictional IIF Destination');await submit();
+ await click('migration-iif');await modal.locator('[name=sourceId]').fill('desktop-fixture');await modal.locator('[name=edition]').fill('Synthetic QuickBooks Desktop 2026');
+ await modal.locator('[name=file]').setInputFiles({name:'fictional.iif',mimeType:'text/plain',buffer:Buffer.from('!CUST\tNAME\tREFNUM\nCUST\tFictional IIF Customer\t198\n')});
+ await modal.locator('[type=submit]').click();await modal.getByRole('heading',{name:'Staging result'}).waitFor();assert.match(await modal.locator('pre').innerText(),/"accepted": 1/);assert.match(await modal.locator('pre').innerText(),/qbd-cust-198/);
+ assert.deepEqual(errors,[]);
+});

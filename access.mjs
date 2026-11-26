@@ -1,7 +1,8 @@
 import {randomUUID} from 'node:crypto';
 
 export const ERP_AREAS=['Overview','Directory','Sales','Purchasing','Jobs & time','Warehouse','Assembly','Fixed assets','Accounting','Banking','Reports','Payroll','History','Company setup','Approvals','Audit trail','Employee records','Benefits administration','Identity connectors'];
-export const WORKER_FEATURES=['Time','Pay','Reviews','Benefits','My Profile','Contacts'];
+const DEFAULT_WORKER_FEATURES=['Time','Pay','Reviews','Benefits','My Profile','Contacts'];
+export const WORKER_FEATURES=[...DEFAULT_WORKER_FEATURES,'Time off'];
 const fail=(ok,message,status=403)=>{if(!ok)throw Object.assign(Error(message),{status});};
 export function initializeAccess(db){
   db.exec(`CREATE TABLE IF NOT EXISTS account_grants(account_id TEXT PRIMARY KEY REFERENCES accounts(id),areas TEXT NOT NULL);
@@ -14,7 +15,7 @@ export function initializeAccess(db){
     if(r.employeeId&&companies.length===1)db.prepare('INSERT OR IGNORE INTO employee_erp_flags VALUES(?,?,?,?)').run(companies[0],r.employeeId,r.active,db.prepare('SELECT areas FROM account_grants WHERE account_id=?').get(r.id).areas);
   }
 }
-export function workerFeatures(db,user){const r=db.prepare('SELECT features FROM employee_portal_flags WHERE company=? AND employee=?').get(user.assignments[0],user.employeeId);return r?JSON.parse(r.features):WORKER_FEATURES;}
+export function workerFeatures(db,user){const r=db.prepare('SELECT features FROM employee_portal_flags WHERE company=? AND employee=?').get(user.assignments[0],user.employeeId);return r?JSON.parse(r.features):DEFAULT_WORKER_FEATURES;}
 export function requireWorkerFeature(db,user,feature){if(user.role==='worker')fail(workerFeatures(db,user).includes(feature),'This feature is not enabled for your employee account.');}
 export function workerRecords(db,user,records){
   const features=workerFeatures(db,user),out={...records};
@@ -61,6 +62,7 @@ export function projectErpState(db,user,state){
     const out={...c};
     // Imported single-owner desk details remain private until converted into scoped workspace records.
     delete out.desk;
+    delete out.manualPayroll;
     if(!has('Directory','Sales','Purchasing','Accounting','Banking','Reports'))out.parties=[];
     else if(!has('Directory','Accounting','Banking','Reports'))out.parties=out.parties.filter(p=>has('Sales')&&p.kind==='Customer'||has('Purchasing')&&p.kind==='Vendor');
     if(!has('Directory','Sales','Purchasing','Warehouse','Assembly','Reports'))out.items=[];

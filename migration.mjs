@@ -9,19 +9,24 @@ export const migrationFields={
   contacts:['sourceId','name','kind'],
   invoices:['sourceId','contactRef','date','amountCents','description'],
   bills:['sourceId','contactRef','date','amountCents','description'],
+  invoiceLines:['sourceId','lineId','contactRef','date','itemName','quantity','unitCents','discountCents','amountCents','description'],
+  billLines:['sourceId','lineId','contactRef','date','itemName','quantity','unitCents','discountCents','amountCents','description'],
   payments:['sourceId','documentRef','documentType','date','amountCents','description'],
   openingBalances:['sourceId','date','account','offsetAccount','amountCents','description'],
   historicalEmployees:['sourceId','name','state'],
   historicalPayroll:['sourceId','employeeRef','date','grossCents','taxCents','netCents'],
   bank:['sourceId','date','description','amountCents']
 };
-export const migrationCoverage={schema:1,nativeAdapters:[],bankProfiles:['quickbooks','wave'],
-  supported:'Explicitly mapped generic CSV and fictional fixtures. Product exports must be mapped and reviewed; no native export schema is inferred.',
+export const migrationCoverage={schema:1,nativeAdapters:['quickbooks-desktop-iif-contacts'],bankProfiles:['quickbooks','wave'],
+  supported:'Explicitly mapped generic CSV and fictional fixtures. Most product exports must be mapped and reviewed. The only native profile is a flat QuickBooks Desktop IIF customer or vendor list.',
   limits:['USD only; fixed FirmQuill chart: source accounts map to existing codes.',
-    'Invoices and bills: one service amount, no sales tax, inventory, discounts, foreign currency or attachments.',
+    'Invoices and bills: single-amount or grouped service lines with whole quantities and discounts. No sales tax, inventory, foreign currency or attachments.',
     'Opening balances: supported manual accounts only; migrate receivable/payable control balances as open documents, inventory through its workflow.',
     'Historical employee and payroll rows are restricted archives only, never live employees, payroll runs or year-to-date tax inputs.',
-    'Bank profiles are existing verified interchange templates, not vendor-native accounting exports.']};
+    'Bank profiles are existing verified interchange templates, not vendor-native accounting exports.',
+    'QuickBooks Desktop IIF contacts: one flat list per file; names and kind only, stable REFNUM or explicit ID crosswalk, no jobs, addresses, balances or transaction history.']};
+const lineTypes={invoiceLines:'invoices',billLines:'bills'};
+export const multiLineFields=['sourceId','lineId','contactRef','date','itemName','quantity','unitCents','discountCents','amountCents','description'];
 const hash=v=>createHash('sha256').update(typeof v==='string'?v:JSON.stringify(v)).digest('hex');
 export const migrationDigest=hash;
 const fail=(ok,msg,status=400)=>requireThat(ok,status,msg);
@@ -38,7 +43,24 @@ export function initializeMigration(db){db.exec(`CREATE TABLE IF NOT EXISTS migr
  CREATE TABLE IF NOT EXISTS migration_setup_receipts(digest TEXT PRIMARY KEY,company TEXT NOT NULL,installed_at TEXT NOT NULL,summary TEXT NOT NULL);
  CREATE TABLE IF NOT EXISTS migration_historical(company TEXT NOT NULL,kind TEXT NOT NULL,source_key TEXT NOT NULL,body TEXT NOT NULL,PRIMARY KEY(company,kind,source_key));`);}
 function sourceInfo(source){exactKeys(source,['id','product','edition','exportedAt','fixtureOnly'],'source');fail(typeof source.fixtureOnly==='boolean','Declare whether this source is fictional fixture data.');return {id:identity(source.id),product:text(source.product,'source product'),edition:text(source.edition||'Unspecified — verify before production','edition'),exportedAt:date(source.exportedAt),fixtureOnly:source.fixtureOnly};}
+function normalizeLine(type,input){
+  exactKeys(input,multiLineFields,'mapped commercial line');
+  const r={sourceId:identity(input.sourceId,'document source ID'),lineId:identity(input.lineId,'line source ID'),contactRef:text(input.contactRef,'contact reference',245),date:date(input.date),itemName:text(input.itemName,'service name'),quantity:positiveAmount(input.quantity),unitCents:positiveAmount(input.unitCents),discountCents:amount(input.discountCents??0),amountCents:positiveAmount(input.amountCents),description:text(input.description||'Migrated '+lineTypes[type],'document description')};
+  const gross=BigInt(r.quantity)*BigInt(r.unitCents);
+  fail(r.discountCents>=0&&BigInt(r.amountCents)+BigInt(r.discountCents)===gross,'Line quantity × unit price minus discount does not equal the source net amount.');
+  integer(Number(gross));return r;
+}
+function normalizeGroup(type,input){
+  exactKeys(input,['sourceId','contactRef','date','amountCents','description','lines'],'mapped commercial document');
+  fail(Array.isArray(input.lines)&&input.lines.length>0&&input.lines.length<=100,'Use 1–100 lines per document.');
+  const lines=input.lines.map(row=>normalizeLine(type,row)).sort((a,b)=>a.lineId<b.lineId?-1:a.lineId>b.lineId?1:0);
+  const first=lines[0];
+  for(const l of lines)fail(l.sourceId===first.sourceId&&l.contactRef===first.contactRef&&l.date===first.date&&l.description===first.description,'Grouped source lines disagree on document ID, contact, date, or description.');
+  fail(new Set(lines.map(l=>l.lineId)).size===lines.length,'Repeated line ID within one document.');
+  return {sourceId:first.sourceId,contactRef:first.contactRef,date:first.date,amountCents:sum(lines.map(l=>l.amountCents)),description:first.description,lines};
+}
 function normalize(type,input){
+  if(Object.hasOwn(lineTypes,type))return normalizeGroup(type,input);
   exactKeys(input,migrationFields[type],'mapped row');const r={};
   for(const k of migrationFields[type])if(input[k]!==undefined&&input[k]!=='')r[k]=input[k];
   r.sourceId=identity(r.sourceId);
@@ -67,13 +89,75 @@ export function parseMigrationCsv(csv){
   fail(!quoted,'Unclosed CSV quote.');if(value||row.length||closed)record();
   const header=rows.shift()?.values||[];fail(header.length&&header.length<=40&&header.every(h=>h.length>0&&h.length<=160)&&new Set(header).size===header.length,'CSV headers must be nonempty and unique.');fail(rows.length>0&&rows.length<=10000,'Use 1–10,000 data rows.');return {header,rows};
 }
+// Parse the documented IIF export/list subset (TAB, CRLF/LF, doubled quotes).
+// The saved workspace receives mapped rows and a content digest, never the IIF bytes.
+export function quickBooksIifContacts(content,kind,crosswalk={}){
+  fail(typeof content==='string'&&Buffer.byteLength(content)<=2*1024*1024,'IIF must be text of at most 2 MiB.',413);
+  fail(['Customer','Vendor'].includes(kind),'Choose one flat QuickBooks customer or vendor list.');
+  fail(plain(crosswalk)&&Object.keys(crosswalk).length<=10000,'A QuickBooks ID crosswalk must be a bounded JSON object by exact name.');
+  const labels=new Set(),raw=[],code=kind==='Customer'?'CUST':'VEND';
+  let row=[],value='',quoted=false,closed=false,line=1,start=1;
+  const field=()=>{row.push(value);value='';closed=false;};
+  const record=()=>{field();if(row.some(v=>v!==''))raw.push({line:start,cols:row});row=[];start=line+1;};
+  content=content.replace(/^\uFEFF/,'').replace(/\r\n?/g,'\n');
+  fail(!content.includes('\u0000'),'IIF contains a NUL or unsupported encoding.');
+  for(let i=0;i<content.length;i++){
+    const ch=content[i];
+    if(quoted){if(ch==='"'){if(content[i+1]==='"'){value+='"';i++;}else {quoted=false;closed=true;}}else {value+=ch;if(ch==='\n')line++;}}
+    else if(ch==='"'&&!value&&!closed)quoted=true;
+    else if(ch==='\t')field();
+    else if(ch==='\n'){record();line++;}
+    else {fail(ch!=='"'&&!closed,'Invalid IIF quoting at line '+line+'.');value+=ch;}
+  }
+  fail(!quoted,'Unclosed IIF quote.');if(row.length||value||closed)record();
+  fail(raw.length<=10003,'Use at most 10,000 IIF list rows.',413);
+  let header,seenHdr=false,seenMeta=false;const rows=[];
+  for(const r of raw){
+    const [tag,...data]=r.cols;
+    if(!header&&tag==='!HDR'){fail(!seenHdr,'Unexpected repeated IIF export header.');seenHdr=true;continue;}
+    if(!header&&tag==='HDR'){fail(seenHdr&&!seenMeta,'Unexpected IIF export metadata.');seenMeta=true;continue;}
+    if(!header&&tag==='!'+code){
+      header=data;const fields=header.filter(Boolean);fail(header.length<=160&&header.includes('NAME')&&new Set(fields).size===fields.length,'The IIF list needs a unique NAME header.');continue;
+    }
+    fail(header&&tag===code,'This profile accepts one flat '+kind.toLowerCase()+' list only, not a combined IIF or transaction file (line '+r.line+').');
+    try{
+      fail(data.slice(header.length).every(v=>v===''),'Unmapped trailing IIF fields.');
+      const name=text(data[header.indexOf('NAME')],'contact name');
+      fail(!name.includes(':'),'Hierarchical customer/job names need a separately reviewed mapping.');
+      const externalId=Object.hasOwn(crosswalk,name)?identity(crosswalk[name],'reviewed crosswalk ID'):null;
+      const ref=header.includes('REFNUM')?String(data[header.indexOf('REFNUM')]??'').trim():'';
+      const sourceId=externalId||(/^[1-9]\d{0,39}$/.test(ref)?'qbd-'+code.toLowerCase()+'-'+ref:'');
+      fail(sourceId,'No stable REFNUM; give this exact contact name a reviewed crosswalk ID.');
+      fail(!labels.has(name.toLowerCase()),'Repeated IIF contact name; check the list.');
+      labels.add(name.toLowerCase());rows.push({line:rows.length===0&&r.line<2?2:r.line,record:normalize('contacts',{sourceId,name,kind})});
+    }catch(e){rows.push({line:r.line,error:e.message});}
+  }
+  fail(header&&rows.length>0&&rows.length<=10000,'No supported contact rows found in the IIF list.');return rows;
+}
 function mapCsv(csv,type,mapping){
   fail(Object.hasOwn(migrationFields,type),'Choose a supported mapped record type.');exactKeys(mapping,migrationFields[type],'mapping');
   const {header,rows}=parseMigrationCsv(csv);fail(Object.values(mapping).every(h=>header.includes(mappingColumn(h))),'A mapped column is missing from the CSV.');
   fail(mapping.sourceId,'Map a stable sourceId column; row numbers and customer names are not stable IDs.');
-  return rows.map(row=>{try{fail(row.values.length===header.length,'Column count differs from the header.');const input=Object.fromEntries(Object.entries(mapping).map(([k,h])=>[k,mappedValue(row.values[header.indexOf(mappingColumn(h))],h)]));return {line:row.line,record:normalize(type,input)};}catch(e){return {line:row.line,error:e.message};}});
+  const convert=row=>{fail(row.values.length===header.length,'Column count differs from the header.');return Object.fromEntries(Object.entries(mapping).filter(([k,h])=>!Object.hasOwn(lineTypes,type)||k!=='discountCents'||row.values[header.indexOf(mappingColumn(h))].trim()!=='').map(([k,h])=>[k,mappedValue(row.values[header.indexOf(mappingColumn(h))],h)]));};
+  if(Object.hasOwn(lineTypes,type)){
+    fail(['sourceId','lineId','contactRef','date','itemName','quantity','unitCents','amountCents'].every(k=>mapping[k]),'Map stable document and line IDs, contact, date, service, quantity, unit price, and net amount.');
+    const groups=new Map(),invalid=[];
+    const idColumn=header.indexOf(mappingColumn(mapping.sourceId));
+    for(const row of rows){let doc;try{doc=identity(row.values[idColumn],'document source ID');}catch{invalid.push({line:row.line,error:'Cannot verify document membership. Correct this CSV and stage the entire document batch again.'});continue;}
+      if(!groups.has(doc))groups.set(doc,[]);groups.get(doc).push(row);
+    }
+    // Unknown document membership can make otherwise valid groups incomplete.
+    // Reject the staging operation rather than allowing a partial posting.
+    fail(!invalid.length,'A commercial line is missing a stable document source ID. Correct the CSV before staging.');
+    return [...groups.values()].map(rows=>{
+      const line=rows[0].line;
+      try{return {line,record:normalizeGroup(type,{lines:rows.map(row=>convert(row))}),sourceRows:rows.map(row=>row.line)};}
+      catch(e){return {line,error:'Entire document excluded from posting: '+e.message,sourceRows:rows.map(row=>row.line)};}
+    }).sort((a,b)=>a.line-b.line);
+  }
+  return rows.map(row=>{try{return {line:row.line,record:normalize(type,convert(row))};}catch(e){return {line:row.line,error:e.message};}});
 }
-function key(batch,row){return batch.source.id+'/'+batch.recordType+'/'+row.sourceId;}
+function key(batch,row){return batch.source.id+'/'+(lineTypes[batch.recordType]||batch.recordType)+'/'+row.sourceId;}
 function refKey(batch,type,reference){const parts=reference.split('/');fail(parts.length===1||parts.length===2,'References use sourceId or source/sourceId.');return (parts.length===1?batch.source.id:parts[0])+'/'+type+'/'+parts.at(-1);}
 function stableId(seed){return 'migration-'+hash(seed).slice(0,32);}
 function applyStable(state,companyId,action,seed){
@@ -88,7 +172,12 @@ export function validateMigrationDataset(dataset){
   fail(Array.isArray(dataset.batches)&&dataset.batches.length<=100&&Array.isArray(dataset.exclusions)&&dataset.exclusions.length<=10000,'Invalid migration collections.');
   const ids=new Set(),sources=new Map();let count=0;
   for(const b of dataset.batches){exactKeys(b,['id','source','recordType','mapping','profileName','csvSha256','rows'],'batch');identity(b.id,'batch ID');fail(!ids.has(b.id),'Duplicate batch ID.');ids.add(b.id);sourceInfo(b.source);const sourceIdentity=JSON.stringify([b.source.product,b.source.edition,b.source.fixtureOnly]),prior=sources.get(b.source.id);fail(!prior||prior===sourceIdentity,'One source ID cannot identify different source products or editions.');sources.set(b.source.id,sourceIdentity);fail(Object.hasOwn(migrationFields,b.recordType),'Unsupported record type.');exactKeys(b.mapping,migrationFields[b.recordType],'mapping');for(const value of Object.values(b.mapping))mappingColumn(value);fail(typeof b.profileName==='string'&&b.profileName.length<=160&&/^[a-f0-9]{64}$/.test(b.csvSha256),'Invalid source digest/profile.');fail(Array.isArray(b.rows)&&b.rows.length<=10000,'Invalid batch rows.');
-    const rowLines=new Set();for(const row of b.rows){exactKeys(row,['line','record','error'],'row');fail(Number.isSafeInteger(row.line)&&row.line>=2&&!rowLines.has(row.line),'Invalid or repeated source line.');rowLines.add(row.line);fail((plain(row.record)&&row.error===undefined)||(typeof row.error==='string'&&!row.record&&row.error.length<=500),'Invalid staged row.');if(row.record){const normalized=normalize(b.recordType,row.record);fail(Object.keys(normalized).length===Object.keys(row.record).length&&Object.entries(normalized).every(([field,value])=>row.record[field]===value),'Mapped record is not in canonical normalized form.');}count++;}}
+    const rowLines=new Set();for(const row of b.rows){exactKeys(row,['line','record','error','sourceRows'],'row');fail(Number.isSafeInteger(row.line)&&row.line>=2&&!rowLines.has(row.line),'Invalid or repeated source line.');rowLines.add(row.line);
+      if(Object.hasOwn(lineTypes,b.recordType)){
+        fail(Array.isArray(row.sourceRows)&&row.sourceRows.length>0&&row.sourceRows.length<=10000&&row.sourceRows[0]===row.line&&row.sourceRows.every((n,i)=>Number.isSafeInteger(n)&&n>=2&&(!i||n>row.sourceRows[i-1])),'Invalid grouped source rows.');
+        fail(!row.record||row.sourceRows.length===row.record.lines?.length,'Grouped source row count differs from the mapped line count.');
+      }else fail(row.sourceRows===undefined,'Unsupported source line metadata.');
+      fail((plain(row.record)&&row.error===undefined)||(typeof row.error==='string'&&!row.record&&row.error.length<=500),'Invalid staged row.');if(row.record){const normalized=normalize(b.recordType,row.record);fail(Object.keys(normalized).length===Object.keys(row.record).length&&Object.entries(normalized).every(([field,value])=>(Object.hasOwn(lineTypes,b.recordType)?JSON.stringify(row.record[field])===JSON.stringify(value):row.record[field]===value)),'Mapped record is not in canonical normalized form.');}count+=row.sourceRows?.length??1;}}
   fail(count<=20000,'A company package supports at most 20,000 staged rows.',413);
   fail(dataset.exclusions.every(x=>typeof x==='string'&&dataset.batches.some(b=>b.rows.some(r=>b.id+':'+r.line===x))),'Invalid excluded row reference.');
   fail(plain(dataset.expectedBalances)&&Object.entries(dataset.expectedBalances).every(([k,v])=>Object.hasOwn(accounts,k)&&Number.isSafeInteger(v)),'Expected balances must use FirmQuill account codes and integer cents.');return dataset;
@@ -97,8 +186,8 @@ export function previewMigration(dataset){
   validateMigrationDataset(dataset);const cid=dataset.company.id;let state=newVault(dataset.company.name);state.companies[0].id=cid;
   const links=new Map(),seen=new Map(),candidates=new Map(),unresolved=[],historical=[],outcomes=[],totals={invoices:0,bills:0,payments:0,bank:0},appliedTotals={...totals};
   const order=Object.keys(migrationFields);let items=dataset.batches.flatMap(b=>b.rows.map(row=>({b,row}))).sort((a,z)=>order.indexOf(a.b.recordType)-order.indexOf(z.b.recordType)||(a.row.record?.date||'').localeCompare(z.row.record?.date||''));
-  const recordOutcome=(b,row,status,detail='')=>{outcomes.push({batchId:b.id,sourceId:b.source.id,recordType:b.recordType,line:row.line,sourceIdValue:row.record?.sourceId||'',status});if(detail)unresolved.push({batchId:b.id,line:row.line,sourceId:b.source.id,recordType:b.recordType,status,detail});};
-  for(const {b,row} of items){const type=b.recordType,r=row.record;
+  const recordOutcome=(b,row,status,detail='')=>{outcomes.push({batchId:b.id,sourceId:b.source.id,recordType:b.recordType,line:row.line,sourceIdValue:row.record?.sourceId||'',status,...(row.sourceRows?{sourceRows:row.sourceRows}:{})});if(detail)unresolved.push({batchId:b.id,line:row.line,sourceId:b.source.id,recordType:b.recordType,status,detail,...(row.sourceRows?{sourceRows:row.sourceRows}:{})});};
+  for(const {b,row} of items){const type=lineTypes[b.recordType]||b.recordType,r=row.record;
     if(r&&type in totals)totals[type]=sum([totals[type],r.amountCents]);
     if(dataset.exclusions.includes(b.id+':'+row.line)){recordOutcome(b,row,'excluded','Explicitly excluded during migration review.');continue;}
     if(row.error){recordOutcome(b,row,'error',row.error);continue;}
@@ -110,7 +199,7 @@ export function previewMigration(dataset){
       let businessKey=Object.fromEntries(Object.entries(r).filter(([field])=>field!=='sourceId'));
       if(type==='contacts')businessKey=[r.name.toLowerCase(),r.kind];
       if(type==='accounts')businessKey=[r.name.toLowerCase(),r.targetAccount];
-      if(['invoices','bills'].includes(type))businessKey=[links.get(refKey(b,'contacts',r.contactRef))||r.contactRef,r.date,r.amountCents,r.description];
+      if(['invoices','bills'].includes(type))businessKey=[links.get(refKey(b,'contacts',r.contactRef))||r.contactRef,r.date,r.amountCents,r.description,r.lines&&r.lines.map(l=>[l.itemName,l.quantity,l.unitCents,l.discountCents]).sort()];
       if(type==='payments')businessKey=[links.get(refKey(b,r.documentType,r.documentRef))||r.documentRef,r.date,r.amountCents,r.description];
       const signature=hash([type,businessKey]);
       if(candidates.has(signature)&&candidates.get(signature).source!==b.source.id){const prior=candidates.get(signature);if(links.has(prior.key))links.set(k,links.get(prior.key));recordOutcome(b,row,'duplicate-candidate','Matching mapped content from another source; skipped for review. To import a distinct record, give it distinct business content or exclude and correct the source.');continue;}
@@ -119,7 +208,10 @@ export function previewMigration(dataset){
       else if(type==='contacts')links.set(k,run({type:'contact',kind:r.kind,name:r.name,date:'2000-01-01'}));
       else if(type==='invoices'||type==='bills'){
         const party=links.get(refKey(b,'contacts',r.contactRef));fail(party,'Contact reference is unresolved.');const expectedKind=type==='invoices'?'Customer':'Vendor';fail(state.companies[0].parties.find(p=>p.id===party)?.kind===expectedKind,'Contact kind does not match document.');
-        const item=run({type:'item',kind:'Service',name:'Migrated service — '+r.sourceId,date:r.date},'item');let parent=run({type:type==='invoices'?'quote':'purchase order',party,item,qty:1,unit:r.amountCents,date:r.date,label:r.description},'origin');
+        const origin={type:type==='invoices'?'quote':'purchase order',party,date:r.date,label:r.description};
+        if(r.lines)origin.lines=r.lines.map(l=>({item:run({type:'item',kind:'Service',name:l.itemName,date:r.date},'item/'+l.lineId),qty:l.quantity,unit:l.unitCents,discount:l.discountCents,location:'Main'}));
+        else Object.assign(origin,{item:run({type:'item',kind:'Service',name:'Migrated service — '+r.sourceId,date:r.date},'item'),qty:1,unit:r.amountCents});
+        let parent=run(origin,'origin');
         for(const step of type==='invoices'?['sales order','fulfillment','invoice']:['receiving','bill'])parent=run({type:step,parent,date:r.date,label:r.description},step);links.set(k,parent);
       }else if(type==='payments'){
         const parent=links.get(refKey(b,r.documentType,r.documentRef));fail(parent,'Document reference is unresolved.');links.set(k,run({type:r.documentType==='invoices'?'collection':'payment',parent,amount:r.amountCents,date:r.date,label:r.description}));
@@ -133,7 +225,7 @@ export function previewMigration(dataset){
   validateState(state);const report=statements(state.companies[0].entries),counts={input:outcomes.length,accepted:0,duplicate:0,'duplicate-candidate':0,conflict:0,error:0,excluded:0};for(const o of outcomes)counts[o.status]++;
   const differences=Object.entries(dataset.expectedBalances).map(([account,expectedCents])=>({account,expectedCents,actualCents:report.balances[account],differenceCents:sum([report.balances[account],-expectedCents])}));
   const batches=dataset.batches.map(b=>({batchId:b.id,sourceId:b.source.id,recordType:b.recordType,input:b.rows.length,accepted:outcomes.filter(o=>o.batchId===b.id&&o.status==='accepted').length,unresolved:outcomes.filter(o=>o.batchId===b.id&&o.status!=='accepted').length}));
-  return {digest:hash(dataset),company:dataset.company,counts,batches,outcomes,unresolved,reconciliation:{countsBalanced:sum(Object.entries(counts).filter(([k])=>k!=='input').map(([,v])=>v))===counts.input,sourceTotalsCents:totals,acceptedTotalsCents:appliedTotals,balances:report.balances,trialDifferenceCents:report.trialDifference,balanceChecks:differences,independentlyVerified: differences.length>0,balanced:differences.every(d=>d.differenceCents===0)&&report.trialDifference===0,note:'Source totals include duplicates and excluded rows. Accepted totals show imported scope; unresolved items explain the difference. Expected balances must be independently supplied; an empty comparison is not independent reconciliation.'},state,historical};
+  return {digest:hash(dataset),company:dataset.company,counts,batches,outcomes,unresolved,reconciliation:{countsBalanced:sum(Object.entries(counts).filter(([k])=>k!=='input').map(([,v])=>v))===counts.input,sourceTotalsCents:totals,acceptedTotalsCents:appliedTotals,balances:report.balances,trialDifferenceCents:report.trialDifference,balanceChecks:differences,independentlyVerified: differences.length>0,balanced:differences.every(d=>d.differenceCents===0)&&report.trialDifference===0,note:'Source totals include duplicates and excluded rows. Grouped commercial documents count as one outcome per document; its sourceRows list retains all physical line numbers. Accepted totals show imported scope; unresolved items explain the difference. Expected balances must be independently supplied; an empty comparison is not independent reconciliation.'},state,historical};
 }
 function getRun(db,id){identity(id,'run ID');const row=db.prepare('SELECT * FROM migration_runs WHERE id=?').get(id);fail(row,'Migration run unavailable.',404);return {...row,dataset:JSON.parse(row.body)};}
 function publicPreview(result){const {state,historical,...view}=result;return {...view,historicalCount:historical.length,liveRecordCounts:{contacts:state.companies[0].parties.length,documents:state.companies[0].docs.length,journals:state.companies[0].entries.length,bank:state.companies[0].bank.length}};}
@@ -149,7 +241,11 @@ export function migrationCommand(db,user,p){owner(user);initializeMigration(db);
   if(p.type==='stage'){
     const source=sourceInfo(p.source);let recordType=p.recordType,mapping=p.mapping,profileName=p.profileName||'';
     if(profileName){const profile=db.prepare('SELECT body FROM migration_profiles WHERE name=?').get(profileName);fail(profile,'Mapping profile unavailable.');const saved=JSON.parse(profile.body);fail(saved.recordType===recordType,'Profile record type differs.');mapping=saved.mapping;}
-    let rows;if(p.bankProfile){fail(recordType==='bank'&&['wave','quickbooks'].includes(p.bankProfile),'Choose a verified bank profile.');const bank=previewBankCsv(p.csv,p.bankProfile);rows=bank.rows.map((r,i)=>({line:i+2,record:{sourceId:hash(r.sourceRef).slice(0,32),date:r.date,description:r.description,amountCents:r.amountCents}}));mapping={sourceId:'derived verified bank reference',date:'Date',description:'Description',amountCents:'Amount'};profileName='verified-bank-'+p.bankProfile;}else rows=mapCsv(p.csv,recordType,mapping);
+    let rows;if(p.nativeProfile){
+      fail(!p.bankProfile&&!profileName&&recordType==='contacts'&&p.nativeProfile==='quickbooks-desktop-iif-contacts','Choose the supported QuickBooks Desktop contact profile.');
+      rows=quickBooksIifContacts(p.csv,p.contactKind,p.iifCrosswalk);
+      mapping={sourceId:'IIF REFNUM or reviewed crosswalk',name:'IIF NAME',kind:'Selected contact list type'};profileName=p.nativeProfile;
+    }else if(p.bankProfile){fail(recordType==='bank'&&['wave','quickbooks'].includes(p.bankProfile),'Choose a verified bank profile.');const bank=previewBankCsv(p.csv,p.bankProfile);rows=bank.rows.map((r,i)=>({line:i+2,record:{sourceId:hash(r.sourceRef).slice(0,32),date:r.date,description:r.description,amountCents:r.amountCents}}));mapping={sourceId:'derived verified bank reference',date:'Date',description:'Description',amountCents:'Amount'};profileName='verified-bank-'+p.bankProfile;}else rows=mapCsv(p.csv,recordType,mapping);
     dataset.batches.push({id:randomUUID(),source,recordType,mapping,profileName,csvSha256:hash(p.csv),rows});
   }else if(p.type==='exclude'){fail(Array.isArray(p.items),'Specify row exclusions.');dataset.exclusions=[...new Set([...dataset.exclusions,...p.items.map(x=>x.batchId+':'+x.line)])];}
   else if(p.type==='expectations')dataset.expectedBalances=p.balances;

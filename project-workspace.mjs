@@ -15,14 +15,69 @@ export function initializeProjects(db){db.exec(`CREATE TABLE IF NOT EXISTS proje
   CREATE TABLE IF NOT EXISTS project_tasks(id TEXT PRIMARY KEY,company TEXT NOT NULL,project TEXT NOT NULL,department TEXT NOT NULL,body TEXT NOT NULL,version INTEGER NOT NULL);
   CREATE INDEX IF NOT EXISTS project_tasks_scope ON project_tasks(company,project,department);
   CREATE TABLE IF NOT EXISTS project_staffing(id TEXT PRIMARY KEY,company TEXT NOT NULL,project TEXT NOT NULL,employee TEXT NOT NULL,body TEXT NOT NULL,version INTEGER NOT NULL);
-  CREATE TABLE IF NOT EXISTS project_events(id INTEGER PRIMARY KEY,company TEXT NOT NULL,project TEXT NOT NULL,actor TEXT NOT NULL,at TEXT NOT NULL,body TEXT NOT NULL);`);}
+  CREATE TABLE IF NOT EXISTS project_events(id INTEGER PRIMARY KEY,company TEXT NOT NULL,project TEXT NOT NULL,actor TEXT NOT NULL,at TEXT NOT NULL,body TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS project_templates(id TEXT PRIMARY KEY,company TEXT NOT NULL,body TEXT NOT NULL,version INTEGER NOT NULL);
+  CREATE INDEX IF NOT EXISTS project_templates_company ON project_templates(company);`);}
 const legacy=id=>({id,departmentId:'',visibility:'company',readers:[],leadId:'',status:'open',version:0});
 export function visibleProjectJobs(db,user,company){return companyAccess(user,company.id)?company.jobs.filter(j=>visibleProject(db,user,company.id,metadata(db,company.id,j.id)||legacy(j.id))).map(j=>({id:j.id,name:j.name})):[];}
 function rightsFor(db,user,company,project){return user.role==='owner'?['view','manage','assign','restricted','finance','hr']:departmentPermissions(db,user,company,project.departmentId);}
 function writeProject(db,user,company,project){check(user.role!=='worker'&&user.role!=='viewer'&&visibleProject(db,user,company,project),'Project unavailable.',404);check(user.role==='owner'||project.visibility==='company'&&['manager','bookkeeper'].includes(user.role)||rightsFor(db,user,company,project).includes('manage'),'Project management permission required.',403);}
 function audit(db,user,company,project,body){const at=now();db.prepare('INSERT INTO project_events(company,project,actor,at,body) VALUES(?,?,?,?,?)').run(company,project,user.id,at,JSON.stringify(body));db.prepare('INSERT INTO audit(at,actor,companyId,kind,detail) VALUES(?,?,?,?,?)').run(at,user.id,company,'project workspace updated',project);}
+const stateTasks=(db,c,id)=>db.prepare('SELECT * FROM project_tasks WHERE company=? AND project=?').all(c,id).map(parsed);
+const taskDependencies=t=>t?.dependencies||[];
+const canDependency=(t,dept)=>!!t&&t.departmentId===dept&&t.kind==='task'&&!t.restricted;
+function validateTaskLinks(db,user,company,project,old,draft,submitted){
+  const tasks=stateTasks(db,company,project),own=draft.id;
+  const values=submitted===undefined?taskDependencies(old):submitted;
+  check(Array.isArray(values)&&values.length<=40&&values.every(x=>typeof x==='string')&&new Set(values).size===values.length,'Choose distinct predecessor tasks.');
+  const linked=tasks.filter(t=>taskDependencies(t).includes(own));
+  if(values.length||linked.length)check(canDependency(draft,draft.departmentId)&&linked.every(t=>canDependency(t,draft.departmentId)),'Dependent tasks must be ordinary tasks in the same department.');
+  const map=new Map(tasks.map(t=>[t.id,t]));
+  const adding=new Set(values.filter(x=>!taskDependencies(old).includes(x)));
+  for(const id of values){const task=map.get(id);
+    check(id!==own&&canDependency(task,draft.departmentId)&&(!adding.has(id)||visibleWorkspaceRecord(db,user,company,task)),'Choose a visible, ordinary predecessor in this project and department.');
+  }
+  const visited=new Set(),pending=[...values];
+  while(pending.length){const id=pending.pop();check(id!==own,'Task dependencies cannot contain a cycle.');if(!visited.has(id)){visited.add(id);pending.push(...taskDependencies(map.get(id)));}}
+  const verify=old?.status!==draft.status||adding.size>0;
+  if(verify&&draft.status!=='open')check(values.every(id=>map.get(id)?.status==='done'),'Finish predecessor tasks before this task can start.',409);
+  if(old?.status==='done'&&draft.status!=='done')check(!linked.some(t=>t.status!=='open'),'An active or completed task still depends on this predecessor.',409);
+  return values;
+}
+function cleanTemplate(a){
+  check(Array.isArray(a.tasks)&&a.tasks.length>=1&&a.tasks.length<=40,'Enter between 1 and 40 template tasks.');
+  const tasks=a.tasks.map((t,i)=>{check(t&&Number.isSafeInteger(t.days)&&t.days>=0&&t.days<=730,'Enter a task offset in days (0–730).');
+    const prior=t.after||[];check(Array.isArray(prior)&&prior.every(n=>Number.isSafeInteger(n)&&n>=0&&n<i)&&new Set(prior).size===prior.length,'Template predecessors must refer to earlier lines.');
+    return {title:text(t.title,160),days:t.days,after:prior};
+  });
+  return {name:text(a.name,160),tasks};
+}
+function plusDays(value,days){const d=new Date(value+'T12:00:00Z');d.setUTCDate(d.getUTCDate()+days);return day(d.toISOString().slice(0,10));}
 export function projectCommand(db,user,state,a){
   const c=departmentCompany(state,user,a.companyId);check(user.role!=='worker'&&user.role!=='viewer','Corporate project write access required.',403);ensureDepartments(db,state);
+  if(a.type==='template-save'||a.type==='template-remove'){
+    check(user.role==='owner','Only the owner can manage shared project templates.',403);
+    const old=a.templateId&&parsed(db.prepare('SELECT * FROM project_templates WHERE company=? AND id=?').get(c.id,a.templateId));
+    check(!a.templateId||old,'Template unavailable.',404);if(old)check(old.version===a.version,'Template changed. Refresh before saving.',409);
+    if(a.type==='template-remove'){check(old,'Template unavailable.',404);db.prepare('DELETE FROM project_templates WHERE company=? AND id=?').run(c.id,old.id);audit(db,user,c.id,'',{type:a.type,templateId:old.id});return {result:{templateId:old.id}};}
+    const template=cleanTemplate(a),id=old?.id||randomUUID();
+    check(!db.prepare("SELECT 1 FROM project_templates WHERE company=? AND id<>? AND lower(json_extract(body,'$.name'))=lower(?)").get(c.id,id,template.name),'A template with this name already exists.',409);
+    db.prepare('INSERT INTO project_templates VALUES(?,?,?,1) ON CONFLICT(id) DO UPDATE SET body=excluded.body,version=project_templates.version+1').run(id,c.id,JSON.stringify(template));
+    audit(db,user,c.id,'',{type:a.type,templateId:id});return {result:{templateId:id}};
+  }
+  if(a.type==='template-use'){
+    const template=parsed(db.prepare('SELECT * FROM project_templates WHERE company=? AND id=?').get(c.id,a.templateId));check(template,'Template unavailable.',404);
+    check(template.version===a.version,'Template changed. Refresh before using it.',409);
+    const start=day(a.start),departmentId=a.departmentId;
+    check(departmentFor(db,c.id,departmentId),'Choose a task department.');
+    const created=projectCommand(db,user,state,{type:'project-save',companyId:c.id,name:a.name,departmentId,visibility:'department',date:start});
+    const id=created.result.projectId,ids=[];
+    for(const t of template.tasks){
+      const task=projectCommand(db,user,created.state,{type:'project-task-save',companyId:c.id,projectId:id,departmentId,title:t.title,dueDate:plusDays(start,t.days),dependencies:t.after.map(i=>ids[i])});
+      ids.push(task.result.taskId);
+    }
+    return {state:created.state,result:{projectId:id,taskIds:ids}};
+  }
   if(a.type==='project-save'){
     const job=a.id?c.jobs.find(j=>j.id===a.id):null;check(!a.id||job,'Project unavailable.',404);const old=job?(metadata(db,c.id,job.id)||legacy(job.id)):null;
     if(old){writeProject(db,user,c.id,old);check(a.version===old.version,'Project changed. Refresh before saving.',409);}
@@ -43,6 +98,7 @@ export function projectCommand(db,user,state,a){
     const kind=a.kind||'task';check(['task','onboarding','termination'].includes(kind),'Choose a task kind.');const restricted=!!a.restricted;check(!(restricted||old?.restricted)||rights.includes('restricted'),'Restricted task permission required.',403);if(kind!=='task')check(rights.includes('hr')&&(user.role==='owner'||accountAreas(db,user).some(a=>['Employee records','Benefits administration'].includes(a))),'HR permission and employee ERP area required.',403);
     const ownerId=validateWorkspaceAccount(db,c.id,a.ownerId||'',{hrOnly:kind!=='task'});check(ownerId===(old?.ownerId||'')||rights.includes('assign'),'Assignment permission required.',403);const readers=validateReaders(db,c.id,a.readers||[]);check(user.role==='owner'||JSON.stringify(readers)===JSON.stringify(old?.readers||[]),'Only the owner can grant explicit task access.',403);
     const id=old?.id||randomUUID(),body={...provenance(old),projectId:job.id,departmentId,title:text(a.title),kind,ownerId,dueDate:day(a.dueDate||'',true),status:a.status||'open',restricted,readers,notes:text(a.notes||'',4000,true),created:old?.created||now(),updated:now()};check(['open','in-progress','done'].includes(body.status),'Choose task status.');
+    body.dependencies=validateTaskLinks(db,user,c.id,job.id,old,{...body,id},a.dependencies);
     db.prepare('INSERT INTO project_tasks VALUES(?,?,?,?,?,1) ON CONFLICT(id) DO UPDATE SET department=excluded.department,body=excluded.body,version=project_tasks.version+1').run(id,c.id,job.id,departmentId,JSON.stringify(body));audit(db,user,c.id,job.id,{type:a.type,before:old,after:body});return {result:{taskId:id}};
   }
   const rights=rightsFor(db,user,c.id,project);check(rights.includes('assign')||user.role==='owner','Worker assignment permission required.',403);
@@ -60,13 +116,16 @@ export function projectView(db,user,state,query={}){
   check(user.role!=='worker','Corporate project workspace access required.',403);ensureDepartments(db,state);const projects=[],companies=state.companies.filter(c=>companyAccess(user,c.id)&&(!query.companyId||query.companyId===c.id));
   for(const c of companies)for(const job of c.jobs){const p=metadata(db,c.id,job.id)||legacy(job.id);if(!visibleProject(db,user,c.id,p))continue;
     const rights=rightsFor(db,user,c.id,p),finance=user.role==='owner'||rights.includes('finance')&&accountAreas(db,user).some(a=>['Accounting','Reports','Payroll'].includes(a));
-    const tasks=db.prepare('SELECT * FROM project_tasks WHERE company=? AND project=?').all(c.id,job.id).map(parsed).filter(t=>visibleWorkspaceRecord(db,user,c.id,t));
+    const visibleTasks=stateTasks(db,c.id,job.id).filter(t=>visibleWorkspaceRecord(db,user,c.id,t));
+    const visibleIds=new Set(visibleTasks.map(t=>t.id));
+    const tasks=visibleTasks.map(t=>({...t,dependencies:taskDependencies(t).filter(id=>visibleIds.has(id))}));
     const staffing=db.prepare('SELECT * FROM project_staffing WHERE company=? AND project=?').all(c.id,job.id).map(parsed).map(s=>({...s,employeeName:c.employees.find(e=>e.id===s.employeeId)?.name||'Worker'}));
     projects.push({...p,name:job.name,companyId:c.id,companyName:c.name,rights,tasks,staffing,timeMinutes:sum(c.time.filter(t=>t.job===job.id).map(t=>t.minutes)),...(finance?{cost:jobSummary(c,job.id)}:{})});
   }
   const companyId=query.companyId||companies[0]?.id,departments=companyId?db.prepare('SELECT * FROM departments WHERE company=?').all(companyId).map(parsed).map(d=>({...d,rights:departmentPermissions(db,user,companyId,d.id)})).filter(d=>d.rights.includes('view')):[],available=user.role==='owner'||projects.length||departments.length;
   const readerAccounts=user.role==='owner'&&companyId&&companies.some(c=>c.id===companyId)?db.prepare('SELECT id,name,role,assignments FROM accounts WHERE active=1').all().filter(a=>a.role==='owner'||JSON.parse(a.assignments).includes(companyId)).map(({id,name,role})=>({id,name,role})):[];
-  return {projects,accounts:companyId&&available?workspaceAccounts(db,user,state,companyId):[],readerAccounts,employees:companyId&&available?companies.find(c=>c.id===companyId)?.employees.map(({id,name})=>({id,name}))||[]:[],departments};
+  const templates=companyId&&companies.some(c=>c.id===companyId)&&(user.role==='owner'||departments.some(d=>d.rights.includes('manage')))?db.prepare('SELECT * FROM project_templates WHERE company=? ORDER BY rowid DESC').all(companyId).map(parsed):[];
+  return {projects,templates,accounts:companyId&&available?workspaceAccounts(db,user,state,companyId):[],readerAccounts,employees:companyId&&available?companies.find(c=>c.id===companyId)?.employees.map(({id,name})=>({id,name}))||[]:[],departments};
 }
 function hiddenProjectRecords(db,user,company){
   // Legacy and company-visible journals retain their pre-upgrade financial

@@ -139,3 +139,65 @@ test('correcting an existing open count seeds history from its retained original
   row=x.view().sessions[0];x.act(x.auditor,{type:'count-observe',sessionId,unitId,version:row.version,location:'Harbor A',contents:[{itemId:x.item,quantity:8}]});
   assert.deepEqual(x.view().sessions[0].observationHistory.map(o=>o.contents[0].quantity),[7,8]);assert.equal(position(x.book,x.item,'Harbor A').qty,20);
 });
+
+test('warehouse bins, lots, serials, expiry, and suggestions follow existing ledger without posting',t=>{
+  const x=fixture(t),{unitId}=x.register(),before=JSON.stringify(x.state);
+  const at={date:'2026-01-06'},bin={type:'warehouse-bin',unitId,bin:'A-04',...at};
+  assert.throws(()=>x.act(x.auditor,bin),/manage permission/);x.act(x.manager,bin);
+  const trace={type:'warehouse-trace',unitId,itemId:x.item,lot:'Lot 21',serial:'SERIAL-01',quantity:1,expiry:'2026-01-08',...at};
+  const {metadataId}=x.act(x.manager,trace);
+  assert.throws(()=>x.act(x.manager,{...trace,serial:'serial-01'}),/already assigned/);
+  assert.throws(()=>x.act(x.manager,{...trace,serial:'',quantity:10}),/exceed/);
+  x.act(x.manager,{type:'warehouse-reorder',itemId:x.item,location:'Harbor A',minimum:20,target:30,...at});
+  const w=x.view().warehouse;assert.equal(w.bins[0].bin,'A-04');assert.equal(w.traces[0].expiry,'2026-01-08');assert.equal(w.traces[0].currentBin,'A-04');
+  assert.equal(w.reorder[0].suggested,10);assert.equal(x.view(x.auditor,{auditOnly:true}).warehouse.reorder.length,0);
+  assert.equal(JSON.stringify(x.state),before,'metadata does not post inventory or journal events');
+  x.act(x.manager,{type:'move',unitId,version:1,location:'Harbor B',status:'active',...at});
+  assert.equal(x.view().warehouse.traces[0].currentLocation,'Harbor B');assert.equal(x.view().warehouse.bins[0].bin,'');
+  assert.equal(x.view().warehouse.reorder[0].suggested,20);
+  x.act(x.manager,{type:'move',unitId,version:2,location:'Harbor A',status:'active',...at});
+  assert.equal(x.view().warehouse.bins[0].bin,'','returning does not recover a stale shelf');
+  x.act(x.manager,{type:'warehouse-trace-release',traceId:metadataId,note:'Unpacked and checked',...at});
+  assert.equal(x.view().warehouse.traces[0].released,at.date);
+  assert.throws(()=>x.db.prepare("UPDATE warehouse_metadata SET body='{}' WHERE id=?").run(metadataId),/immutable/);
+});
+
+test('picks are shared drafts with independent rights, prevent same-version overcommit, and never post stock',t=>{
+  const x=fixture(t),{unitId}=x.register(),before=JSON.stringify(x.state);
+  const draft=(name,quantity)=>x.act(x.manager,{type:'warehouse-pick-create',name,unitId,lines:[{itemId:x.item,quantity}]}).planId;
+  const one=draft('Pick first',7),two=draft('Pick second',4);
+  const review={type:'warehouse-pick-review',planId:one,version:1,decision:'approved',note:'Warehouse approved'};
+  assert.equal(x.view(x.approver).warehouse.picks.length,2);
+  assert.equal(x.view(x.auditor,{auditOnly:true}).warehouse.picks.length,0);
+  assert.throws(()=>x.act(x.manager,review),/approve permission/);
+  x.act(x.approver,review);
+  assert.throws(()=>x.act(x.approver,{...review,planId:two}),/already allocate/);
+  const complete={type:'warehouse-pick-complete',planId:one,version:2,note:'Pick observed'};
+  x.act(x.manager,complete);assert.throws(()=>x.act(x.manager,complete),/changed/);
+  assert.throws(()=>x.act(x.approver,{...review,planId:two}),/already allocate/);
+  assert.deepEqual(x.view().warehouse.picks.find(p=>p.id===one).history.map(r=>r.status),['draft','approved','completed']);
+  assert.equal(JSON.stringify(x.state),before);
+});
+
+test('only assigned auditor can start scheduled count; original review/ledger workflow stays separate',t=>{
+  const x=fixture(t),{unitId}=x.register(),due=new Date().toISOString().slice(0,10);
+  const other={id:'auditor2',role:'viewer',assignments:[x.company]};x.db.prepare('INSERT INTO accounts VALUES(?,?,?,?,?)').run(other.id,'Other Auditor',other.role,JSON.stringify(other.assignments),1);
+  x.act(x.owner,{type:'grant',accountId:other.id,rights:['audit']});
+  const plan={type:'warehouse-count-plan',assignee:x.auditor.id,due,name:'Cycle count red',unitIds:[unitId]};
+  assert.throws(()=>x.act(x.manager,{...plan,assignee:x.approver.id}),/audit permission/);
+  const {planId}=x.act(x.manager,plan);
+  assert.equal(x.view(other,{auditOnly:true}).warehouse.schedules.length,0);
+  assert.equal(x.view(x.auditor,{auditOnly:true}).warehouse.schedules[0].id,planId);
+  const start={type:'warehouse-count-start',planId,version:1};
+  assert.throws(()=>x.act(other,start),/assigned auditor/);
+  const {sessionId}=x.act(x.auditor,start);
+  assert.equal(x.view(other,{auditOnly:true}).sessions.length,0);
+  assert.equal(x.view(x.approver).sessions[0].id,sessionId);
+  assert.throws(()=>x.act(x.auditor,start),/changed/);
+  x.act(x.auditor,{type:'count-observe',sessionId,unitId,version:1,location:'Harbor A',contents:[{itemId:x.item,quantity:10}]});
+  x.act(x.auditor,{type:'count-submit',sessionId,version:2});
+  assert.throws(()=>x.act(x.auditor,{type:'count-review',sessionId,version:3,decision:'approve',reason:'Self review',date:due}),/approve permission/);
+  x.act(x.approver,{type:'count-review',sessionId,version:3,decision:'approve',reason:'No discrepancies',date:due});
+  assert.equal(x.view().sessions[0].status,'approved');assert.equal(x.view().warehouse.schedules[0].sessionId,sessionId);
+  assert.equal(position(x.book,x.item,'Harbor A').qty,20);
+});

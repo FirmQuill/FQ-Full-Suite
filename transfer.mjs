@@ -1,3 +1,5 @@
+import {validatePlanning} from './shared/planning-core.mjs';
+import {validateManualPayroll} from './shared/manual-payroll.mjs';
 import {validateDesk} from './shared/desk-core.mjs';
 import {createHash} from 'node:crypto';
 import {createVaultService, MAX_BACKUP_BYTES} from './shared/vault.mjs';
@@ -30,6 +32,8 @@ function validatePortable(state) {
   if (Object.keys(state).some(key => !portableKeys.includes(key))) throw Error('Unrecognized portable data sections.');
   for (const company of state.companies) {
     validateDesk(company);
+    validatePlanning(company);
+    validateManualPayroll(company.manualPayroll,company);
     for (const file of company.attachments) attachmentLength(file);
     for (const entry of company.entries) {
       if (!entry.pair && !entry.other) continue;

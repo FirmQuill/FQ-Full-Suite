@@ -38,11 +38,15 @@ async function fixture(t){
   t.after(async()=>{await suite.close();await rm(dir,{recursive:true,force:true});});
   return {dir,database,state,suite,ids};
 }
-test('pinned Lite build bytes, both company reports, consolidation and federal preview parity',async t=>{
+test('pinned Lite baseline plus explicit shared commerce overlay, company reports, consolidation and federal preview parity',async t=>{
   const baseline=await readFile(new URL('../baseline/LITE-SHA256SUMS.txt',import.meta.url),'utf8');
+  const overlayText=await readFile(new URL('../baseline/LITE-COMMERCE-OVERLAY-SHA256SUMS.txt',import.meta.url),'utf8');
+  const pairs=overlayText.trim().split(/\r?\n/).map(line=>{const [hash,path]=line.split('  ');assert.match(hash,/^[a-f0-9]{64}$/);return [path,hash];});
+  const overlay=new Map(pairs);
+  assert.deepEqual([...overlay.keys()].sort(),['app.mjs','core.mjs','views.mjs']);
   for(const line of baseline.trim().split(/\r?\n/)){
     const [hash,path]=line.split('  ');if(!path.startsWith('dist/'))continue;
-    const bytes=await readFile(new URL('../shared/'+path.slice(5),import.meta.url));assert.equal(createHash('sha256').update(bytes).digest('hex'),hash,path);
+    const bytes=await readFile(new URL('../shared/'+path.slice(5),import.meta.url));assert.equal(createHash('sha256').update(bytes).digest('hex'),overlay.get(path.slice(5))||hash,path);
   }
   const {state,suite}=await fixture(t),owner=await client(suite.mainUrl,'owner'),full=owner.login.data.state;
   assert.deepEqual(full,state);

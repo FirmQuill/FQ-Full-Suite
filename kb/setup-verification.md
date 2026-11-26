@@ -1,6 +1,6 @@
 # Verify initial setup and handoff
 
-Article: setup-verification · Installed version: 0.4.0-preview.1 · Scope: public initial setup only. Detailed feature instructions belong to the separately delivered private customer manual.
+Article: setup-verification · Installed version: 0.5.0-preview.1 · Scope: public initial setup only. Detailed feature instructions belong to the separately delivered private customer manual.
 
 ## Verify the result
 

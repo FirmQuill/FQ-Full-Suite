@@ -1,3 +1,4 @@
+import {validatePlanning} from './shared/planning-core.mjs';
 import {migrateOwnerDesk} from './desk-migration.mjs';
 import {initializeDepartments,ensureDepartments} from './departments.mjs';
 import {initializeProjects,projectBusinessState,authorizeProjectAction,visibleProjectJobs} from './project-workspace.mjs';
@@ -55,6 +56,7 @@ function readBooks(db){const r=db.prepare('SELECT revision,body FROM books WHERE
 function revisionCheck(n,expected){requireThat(Number.isSafeInteger(expected)&&n===expected,409,'The workspace changed. Refresh and review before saving.');}
 function saveBooks(db,state){
   validateState(state);
+  for(const company of state.companies)validatePlanning(company);
   validateAssetAllocations(db,state);
   const raw=JSON.stringify(state);requireThat(Buffer.byteLength(raw)<=32*1024*1024,413,'The portable books exceed 32 MiB.');
   db.prepare('UPDATE books SET body=?,revision=revision+1 WHERE id=1').run(raw);
@@ -68,7 +70,7 @@ function canAccess(u,c){return u.role==='owner'||u.assignments.includes(c);}
 function owner(u){requireThat(u.role==='owner',403,'Owner access required.');}
 function manager(u){requireThat(['owner','manager'].includes(u.role),403,'Manager access required.');}
 function scoped(u,state,db){
-  const allowed=state.companies.filter(c=>canAccess(u,c.id));
+  const allowed=state.companies.filter(c=>canAccess(u,c.id)).map(c=>{if(u.role==='owner')return c;const {planning,...visible}=c;return visible;});
   if(['hr','payroll'].includes(u.role)){const minimal={...state,companies:allowed.map(c=>({...c,employees:c.employees.map(({id,name})=>({id,name})),parties:[],items:[],time:[],docs:[],moves:[],entries:[],assets:[],bank:[],reconciliations:[],history:[],attachments:[]})),groups:[]};return db?projectBusinessState(db,u,projectErpState(db,u,minimal),state):minimal;}
   const result={...state,companies:allowed,groups:state.groups.filter(g=>g.members.every(k=>canAccess(u,k)))};
   return db?projectBusinessState(db,u,projectErpState(db,u,result),state):result;

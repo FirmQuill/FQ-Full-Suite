@@ -1,6 +1,7 @@
 // Data-only import of owner-operated Lite tracking. Posted stock entries already
 // belong to the portable books and must never be replayed by this migration.
 import {randomUUID} from 'node:crypto';
+import {importOwnerWarehouseMetadata} from './warehouse-planning.mjs';
 import {initializeAssets} from './assets-workspace.mjs';
 
 const contents=rows=>(rows||[]).filter(r=>r.qty>0).map(r=>({itemId:r.item,quantity:r.qty})).sort((a,b)=>a.itemId.localeCompare(b.itemId));
@@ -18,7 +19,7 @@ export function migrateOwnerAssets(db,company,receiptKey){
       const existing=db.prepare('SELECT body FROM tracked_units WHERE company=? AND id=?').get(company.id,source.id);
       if(existing){if(JSON.parse(existing.body).sourceEdition!=='Lite')fail('A Lite asset ID collides with an existing Full Suite asset. Preserve both workspaces and resolve the ID before importing.');continue;}
       if(db.prepare('SELECT 1 FROM tracked_units WHERE company=? AND identifier=? COLLATE NOCASE').get(company.id,source.unitId))fail('A Lite tracking identifier already exists in Full Suite. Resolve the duplicate without replacing its history.');
-      const history=source.history||[],row={id:source.id,identifier:source.unitId,name:source.name,kind:source.kind.toLowerCase(),location:source.location,status:statuses[source.status],contents:contents(source.contents),fixedAssetId:source.fixedAsset||'',created:when(history[0]?.date),lastDate:history.at(-1)?.date||'1970-01-01',sourceEdition:'Lite',importReceipt:receiptKey,sourceOwnerRecord:structuredClone(source)};
+      const history=source.history||[],row={id:source.id,identifier:source.unitId,name:source.name,kind:source.kind.toLowerCase(),location:source.location,locationEpoch:source.locationEpoch||0,status:statuses[source.status],contents:contents(source.contents),fixedAssetId:source.fixedAsset||'',created:when(history[0]?.date),lastDate:history.at(-1)?.date||'1970-01-01',sourceEdition:'Lite',importReceipt:receiptKey,sourceOwnerRecord:structuredClone(source)};
       db.prepare('INSERT INTO tracked_units VALUES(?,?,?,?,?)').run(company.id,source.id,source.unitId,JSON.stringify(row),source.version);importedUnits++;
       for(const h of history){
         const movement={id:h.id,unitId:source.id,identifier:source.unitId,kind:'imported-lite-'+h.kind,date:h.date,at:when(h.date),actor:owner,from:'',to:'',before:h.before?contents(h.before):[],after:h.after?contents(h.after):[],beforeKnown:!!h.before,afterKnown:!!h.after,note:h.detail,stockSources:[],sourceEdition:'Lite',sourceHistory:structuredClone(h)};
@@ -45,6 +46,7 @@ export function migrateOwnerAssets(db,company,receiptKey){
       }
       db.prepare('INSERT INTO asset_count_sessions VALUES(?,?,?,?)').run(company.id,source.id,JSON.stringify(row),Math.max(1,source.history?.length||1));importedCounts++;
     }
-    db.exec('RELEASE '+save);return {units:importedUnits,counts:importedCounts,movements:importedMovements};
+    const warehouseEvents=importOwnerWarehouseMetadata(db,company,desk);
+    db.exec('RELEASE '+save);return {units:importedUnits,counts:importedCounts,movements:importedMovements,...(warehouseEvents?{warehouseEvents}:{})};
   }catch(error){db.exec('ROLLBACK TO '+save);db.exec('RELEASE '+save);throw error;}
 }
