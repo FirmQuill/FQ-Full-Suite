@@ -25,6 +25,11 @@ function openStore(filename){
         CREATE TABLE IF NOT EXISTS audit(id INTEGER PRIMARY KEY,at TEXT NOT NULL,actor TEXT NOT NULL,companyId TEXT NOT NULL,kind TEXT NOT NULL,detail TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS approvals(id TEXT PRIMARY KEY,companyId TEXT NOT NULL,kind TEXT NOT NULL,label TEXT NOT NULL,status TEXT NOT NULL,requestedBy TEXT NOT NULL,action TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS requests(actor TEXT NOT NULL,requestId TEXT NOT NULL,fingerprint TEXT NOT NULL,approval TEXT,PRIMARY KEY(actor,requestId));`);
+      // Keep legacy version receipts intact; migrate only the independently verified copy.
+      db.exec(`CREATE TABLE IF NOT EXISTS terms_acceptance_hashes(
+        account_id TEXT NOT NULL REFERENCES accounts(id), version TEXT NOT NULL,
+        content_hash TEXT NOT NULL, accepted_at TEXT NOT NULL,
+        PRIMARY KEY(account_id,version,content_hash));`);
       db.prepare('INSERT OR IGNORE INTO books VALUES(1,0,?)').run(JSON.stringify(empty));
       initializeWorker(db);
     });

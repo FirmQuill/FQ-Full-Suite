@@ -1,7 +1,9 @@
-import {termsVersion} from './web/legal/terms.mjs';
+import {termsVersion,termsText} from './web/legal/terms.mjs';
+import {legacyAgreement} from './web/legal/consent.mjs';
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,createHash} from 'node:crypto';
+const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 import {openStore,tx,readBooks,saveBooks,revisionCheck,audit,safeUser,owner,scoped,passwordHash,passwordMatches,putUser,actionFor,approvalList,decide,auditEvents,requireThat,workerView,workerCommand} from './store.mjs';
 import {inspectLite,exportLite,assertEmptyDestination} from './transfer.mjs';
 
@@ -24,6 +26,9 @@ async function jsonBody(req,max){
 function send(res,status,value){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
 async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin}){
   const db=openStore(database),sessions=new Map(),attempts=new Map();
+  if(termsVersion===legacyAgreement.version && termsHash===legacyAgreement.hash) {
+    db.prepare('INSERT OR IGNORE INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) SELECT account_id,version,?,accepted_at FROM terms_acceptances WHERE version=?').run(termsHash,termsVersion);
+  }
   const dummyHash=await passwordHash(token()),servers=[];
   let expensive=0;
   async function limited(fn){requireThat(expensive<4,429,'Server busy. Try again shortly.');expensive++;try{return await fn();}finally{expensive--;}}
@@ -36,7 +41,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     session.until=Date.now()+30*60000;return u;
   }
   function hasAccepted(user) {
-    return !!db.prepare('SELECT 1 FROM terms_acceptances WHERE account_id=? AND version=?').get(user.id,termsVersion);
+    return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);
   }
   function snapshot(user,s,extras={}){
     if (!hasAccepted(user)) return {termsRequired:termsVersion,csrf:s.csrf};
@@ -62,7 +67,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           let name=path==='/'?'index.html':path.slice(1),root='web/'+portal+'/';
           if(path.startsWith('/legal/')){
             name=path.slice(7);
-            requireThat(['terms.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');
+            requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');
             root='web/legal/';
           }else if(path.startsWith('/shared/')){
             name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png'].includes(name)),404,'File unavailable.');root='shared/';
@@ -95,9 +100,9 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           const body=await jsonBody(req,512);
           requireThat(sessions.get(sid)===s,401,'Sign in again.');
           const account=userFor(s,portal);
-          requireThat(body.version===termsVersion,409,'Terms changed. Reload to read the current version.');
-          db.prepare('INSERT INTO terms_acceptances(account_id,version,accepted_at) VALUES(?,?,?) ON CONFLICT(account_id,version) DO NOTHING')
-            .run(account.id,termsVersion,new Date().toISOString());
+          requireThat(body.version===termsVersion && body.hash===termsHash,409,'Terms changed. Reload to read the current version.');
+          db.prepare('INSERT INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) VALUES(?,?,?,?) ON CONFLICT(account_id,version,content_hash) DO NOTHING')
+            .run(account.id,termsVersion,termsHash,new Date().toISOString());
           send(res,200,snapshot(account,s));return;
         }
         requireThat(hasAccepted(u),428,'Read and agree to the Terms of Service first.');

@@ -1,4 +1,5 @@
-import {termsVersion} from './terms.mjs';
+import {termsVersion,termsText} from './terms.mjs';
+import {agreementHash} from './consent.mjs';
 import {showTerms} from './terms-ui.mjs';
 
 export async function openAccount(payload) {
@@ -10,7 +11,7 @@ export async function openAccount(payload) {
       response = await fetch('/api/terms', {
         method: 'POST', credentials: 'same-origin', cache: 'no-store',
         headers: {'Content-Type':'application/json', 'X-CSRF-Token':payload.csrf},
-        body: JSON.stringify({version:termsVersion})
+        body: JSON.stringify({version:termsVersion,hash:await agreementHash(termsText)})
       });
     } catch {
       throw Error('Could not confirm your agreement. Reconnect and try again.');

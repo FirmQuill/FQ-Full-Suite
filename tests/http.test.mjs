@@ -12,6 +12,8 @@ import {statements,consolidate} from '../shared/core.mjs';
 import {ficaPreview,payrollGate,states} from '../shared/payroll-rules.mjs';
 import {backupDatabase,restoreDatabase} from '../recovery.mjs';
 
+import {termsText} from '../web/legal/terms.mjs';
+const approvedHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const pw='Synthetic fixture access, only.';
 async function client(url,username,agree=true){
   const session={cookie:'',csrf:''};
@@ -27,8 +29,8 @@ async function client(url,username,agree=true){
     assert.equal((await request('admin/users')).status,428);
     assert.equal((await request('worker/action',{})).status,428);
     assert.equal((await request('terms',{version:'obsolete'})).status,409);
-    assert.equal((await request('terms',{version:login.data.termsRequired},{'X-CSRF-Token':''})).status,403);
-    const agreement=await request('terms',{version:login.data.termsRequired});
+    assert.equal((await request('terms',{version:login.data.termsRequired,hash:approvedHash},{'X-CSRF-Token':''})).status,403);
+    const agreement=await request('terms',{version:login.data.termsRequired,hash:approvedHash});
     assert.equal(agreement.status,200);
     login.data=agreement.data;
   }
@@ -141,7 +143,7 @@ test('encrypted entire-database recovery opens in a distinct running instance wi
     assert.deepEqual((await restoredLead.request('audit')).data,audit);
     const recoveredWorker=await client(recovered.workerUrl,'worker',false);
     assert.ok(recoveredWorker.login.data.termsRequired);
-    const signed=await recoveredWorker.request('terms',{version:recoveredWorker.login.data.termsRequired});
+    const signed=await recoveredWorker.request('terms',{version:recoveredWorker.login.data.termsRequired,hash:approvedHash});
     assert.deepEqual(signed.data.data,originalShifts);
     assert.deepEqual((await client(recovered.mainUrl,'owner')).login.data.state,state);
   } finally {await recovered.close();}
@@ -161,16 +163,16 @@ test('terms are durable per account and current host version; failed writes leav
     const original=books();
     db.prepare('INSERT INTO terms_acceptances VALUES(?,?,?)').run(ids.owner,'0.9','2025-01-01');
     assert.equal((await owner.request('session')).data.termsRequired,version);
-    db.exec("CREATE TRIGGER fixture_storage_failure BEFORE INSERT ON terms_acceptances BEGIN SELECT RAISE(ABORT,'Synthetic write failure'); END");
-    assert.ok((await owner.request('terms',{version})).status>=400);
+    db.exec("CREATE TRIGGER fixture_storage_failure BEFORE INSERT ON terms_acceptance_hashes BEGIN SELECT RAISE(ABORT,'Synthetic write failure'); END");
+    assert.ok((await owner.request('terms',{version,hash:approvedHash})).status>=400);
     assert.equal((await owner.request('approvals')).status,428);
     db.exec('DROP TRIGGER fixture_storage_failure');
-    assert.deepEqual((await owner.request('terms',{version})).data.state,state);
+    assert.deepEqual((await owner.request('terms',{version,hash:approvedHash})).data.state,state);
     assert.equal((await worker.request('worker/action',{})).status,428);
     assert.equal((await worker.request('session')).data.data,undefined);
-    assert.equal((await worker.request('terms',{version})).status,200);
-    assert.equal((await owner.request('terms',{version})).status,200);
-    assert.equal(db.prepare('SELECT count(*) AS n FROM terms_acceptances WHERE version=?').get(version).n,2);
+    assert.equal((await worker.request('terms',{version,hash:approvedHash})).status,200);
+    assert.equal((await owner.request('terms',{version,hash:approvedHash})).status,200);
+    assert.equal(db.prepare('SELECT count(*) AS n FROM terms_acceptance_hashes WHERE version=?').get(version).n,2);
     assert.deepEqual(books(),original);
     await owner.request('logout',{});
     const next=await client(suite.mainUrl,'owner',false);
