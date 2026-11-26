@@ -1,21 +1,22 @@
-import {termsVersion,termsText} from './web/legal/terms.mjs';
-import {legacyAgreement} from './web/legal/consent.mjs';
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
-import {randomBytes,createHash} from 'node:crypto';
-const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
+import {randomBytes} from 'node:crypto';
 import {openStore,tx,readBooks,saveBooks,revisionCheck,audit,safeUser,owner,scoped,passwordHash,passwordMatches,putUser,actionFor,approvalList,decide,auditEvents,requireThat,workerView,workerCommand} from './store.mjs';
 import {inspectLite,exportLite,assertEmptyDestination} from './transfer.mjs';
+import {recordsView,recordsCommand,recordFile,employeeProfile} from './records.mjs';
+import {benefitsView,benefitsCommand,benefitFile,effectivePayrollDeductions} from './benefits.mjs';
+import {createIdentityService} from './identity.mjs';
+import {accountAreas,requireArea,ERP_AREAS,saveAreas,WORKER_FEATURES,workerFeatures,requireWorkerFeature,workerRecords} from './access.mjs';
 
 const token=()=>randomBytes(32).toString('base64url');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
 const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs']);
-const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs']);
-const workerFiles=new Set(['index.html','app.mjs','worker.css']);
+const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs']);
+const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
 async function jsonBody(req,max){
-  requireThat(req.headers['content-type']?.split(';')[0]==='application/json',415,'Send JSON.');
+  requireThat(['application/json','application/scim+json'].includes(req.headers['content-type']?.split(';')[0].trim().toLowerCase()),415,'Send JSON.');
   requireThat(!req.headers['content-length']||Number(req.headers['content-length'])<=max,413,'Request exceeds size limit.');
   const parts=[];let total=0;
   for await(const p of req){total+=p.length;requireThat(total<=max,413,'Request exceeds size limit.');parts.push(p);}
@@ -23,12 +24,10 @@ async function jsonBody(req,max){
   requireThat(data&&typeof data==='object'&&!Array.isArray(data),400,'Invalid request body.');
   return data;
 }
-function send(res,status,value){res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
-async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin}){
+function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHeader('Content-Type')||'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
+async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={}}){
   const db=openStore(database),sessions=new Map(),attempts=new Map();
-  if(termsVersion===legacyAgreement.version && termsHash===legacyAgreement.hash) {
-    db.prepare('INSERT OR IGNORE INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) SELECT account_id,version,?,accepted_at FROM terms_acceptances WHERE version=?').run(termsHash,termsVersion);
-  }
+  const identity=createIdentityService({db,database,readBooks,saveBooks,passwordHash,putUser,...identityOptions});
   const dummyHash=await passwordHash(token()),servers=[];
   let expensive=0;
   async function limited(fn){requireThat(expensive<4,429,'Server busy. Try again shortly.');expensive++;try{return await fn();}finally{expensive--;}}
@@ -38,16 +37,16 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     requireThat(session?.portal===portal&&session.until>Date.now()&&session.absolute>Date.now(),401,'Sign in again.');
     const u=safeUser(db.prepare('SELECT * FROM accounts WHERE id=? AND active=1').get(session.userId));
     requireThat(u&&u.authVersion===session.authVersion&&(u.role==='worker')===(portal==='worker'),401,'Sign in again.');
+    if(u.employeeId&&u.assignments.length===1)requireThat(!['inactive','disabled','deactivated','terminated'].includes(employeeProfile(db,readBooks(db).state,u.assignments[0],u.employeeId).employmentStatus),401,'Employee access is disabled.');
+    if(u.role!=='worker'&&u.employeeId)requireThat(db.prepare('SELECT enabled FROM employee_erp_flags WHERE company=? AND employee=?').get(u.assignments[0],u.employeeId)?.enabled,401,'ERP access is disabled.');
     session.until=Date.now()+30*60000;return u;
   }
-  function hasAccepted(user) {
-    return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);
-  }
   function snapshot(user,s,extras={}){
-    if (!hasAccepted(user)) return {termsRequired:termsVersion,csrf:s.csrf};
     const {state,revision}=readBooks(db);
-    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,data:workerView(db,user,state)}:
-      {user:publicUser(user),csrf:s.csrf,state:scoped(user,state),revision,...extras};
+    const features=s.portal==='worker'?workerFeatures(db,user):[];
+    const time=s.portal==='worker'?workerView(db,user,state):null;
+    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,recordsView(db,user,state)),benefits:features.includes('Benefits')?benefitsView(db,user,state):null}:
+      {user:{...publicUser(user),areas:accountAreas(db,user)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
   function portalServer(portal,publicOrigin){
     return createServer(async(req,res)=>{
@@ -55,28 +54,52 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
       const origin=publicOrigin||'http://127.0.0.1:'+localPort;
       const secure=origin.startsWith('https://');
       const cookieName=(secure?'__Host-':'')+'fq_'+portal;
-      const setCookie=(value,age)=>res.setHeader('Set-Cookie',cookieName+'='+value+'; HttpOnly; SameSite=Strict; Path=/; Max-Age='+age+(secure?'; Secure':''));
+      const setCookie=(value,age)=>{const existing=res.getHeader('Set-Cookie'),cookies=existing?(Array.isArray(existing)?existing:[existing]):[];res.setHeader('Set-Cookie',[...cookies,cookieName+'='+value+'; HttpOnly; SameSite=Strict; Path=/; Max-Age='+age+(secure?'; Secure':'')]);};
       res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
       res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
       res.setHeader('X-Frame-Options','DENY');
       try{
         requireThat(req.headers.host===new URL(origin).host||req.headers.host==='127.0.0.1:'+localPort,403,'Unknown host.');
-        const path=req.url;
+        const url=new URL(req.url,origin),path=url.pathname;
         if(!path.startsWith('/api/')){
           requireThat(req.method==='GET'||req.method==='HEAD',405,'Method unavailable.');
           let name=path==='/'?'index.html':path.slice(1),root='web/'+portal+'/';
-          if(path.startsWith('/legal/')){
-            name=path.slice(7);
-            requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');
-            root='web/legal/';
-          }else if(path.startsWith('/shared/')){
+          if(path.startsWith('/shared/')){
             name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png'].includes(name)),404,'File unavailable.');root='shared/';
           }else requireThat((portal==='main'?mainFiles:workerFiles).has(name),404,'File unavailable.');
           const bytes=await readFile(new URL('./'+root+name,import.meta.url));res.writeHead(200,{'Content-Type':mime[name.split('.').pop()]});res.end(req.method==='HEAD'?undefined:bytes);return;
         }
+        if(path.startsWith('/api/scim/')){
+          requireThat(portal==='main',404,'Endpoint unavailable.');
+          try{
+            const body=['POST','PUT','PATCH'].includes(req.method)?await jsonBody(req,256*1024):undefined;
+            const result=await identity.scim(req.method,url,req.headers,body);
+            res.writeHead(result.status,result.headers);res.end(result.status===204?undefined:JSON.stringify(result.body));return;
+          }catch(e){
+            const status=e.status||400;res.writeHead(status,{'Content-Type':'application/scim+json; charset=utf-8'});res.end(JSON.stringify({schemas:['urn:ietf:params:scim:api:messages:2.0:Error'],status:String(status),detail:status===500?'Identity storage unavailable.':e.message}));return;
+          }
+        }
         const post=req.method==='POST';requireThat(post||req.method==='GET',405,'Method unavailable.');
         if(post)requireThat(req.headers.origin===origin,403,'Origin does not match this portal.');
         const cookies=(req.headers.cookie||'').split(';').map(x=>x.trim()),sid=cookies.find(x=>x.startsWith(cookieName+'='))?.slice(cookieName.length+1),s=sessions.get(sid);
+        if(path==='/api/identity/providers'&&!post){send(res,200,{providers:identity.providers(portal)});return;}
+        if(path==='/api/identity/invite/accept'&&post){
+          const p=await jsonBody(req,4096);await limited(()=>identity.acceptInvite(p.token,p.password));send(res,200,{ok:true});return;
+        }
+        if(path==='/api/identity/oidc/start'&&!post){
+          const result=await identity.beginOidc(url.searchParams.get('id'),origin+'/api/identity/oidc/callback',portal);
+          res.setHeader('Set-Cookie','fq_oidc_binding='+result.binding+'; HttpOnly; SameSite=Lax; Path=/; Max-Age=600'+(secure?'; Secure':''));
+          res.writeHead(302,{Location:result.redirect});res.end();return;
+        }
+        if(path==='/api/identity/oidc/callback'&&!post){
+          const binding=cookies.find(x=>x.startsWith('fq_oidc_binding='))?.slice(16);
+          res.setHeader('Set-Cookie','fq_oidc_binding=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0'+(secure?'; Secure':''));
+          const result=await identity.finishOidc(url.searchParams,origin+'/api/identity/oidc/callback',binding);
+          const u=safeUser(db.prepare('SELECT * FROM accounts WHERE id=? AND active=1').get(result.userId));
+          requireThat(u&&(u.role==='worker')===(portal==='worker'),401,'Identity is unavailable for this portal.');
+          const fresh={userId:u.id,authVersion:u.authVersion,portal,csrf:token(),until:Date.now()+30*60000,absolute:Date.now()+12*3600000},key=token();
+          userFor(fresh,portal);storeSession(key,fresh);setCookie(key,43200);res.writeHead(302,{Location:'/'});res.end();return;
+        }
         if(path==='/api/login'&&post){
           const p=await jsonBody(req,4096),username=String(p.username??'').trim().toLowerCase();
           const now=Date.now(),ip=req.socket.remoteAddress;
@@ -90,32 +113,50 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           const u=row&&safeUser(db.prepare('SELECT * FROM accounts WHERE id=? AND active=1').get(row.id));
           requireThat(ok&&u&&row.authVersion===u.authVersion&&(u.role==='worker')===(portal==='worker'),401,'Credentials are invalid for this portal.');
           const fresh={userId:u.id,authVersion:u.authVersion,portal,csrf:token(),until:now+30*60000,absolute:now+12*3600000},key=token();
-          const data=snapshot(u,fresh);attempts.delete(keys[0]);if(s?.portal===portal)sessions.delete(sid);storeSession(key,fresh);setCookie(key,43200);send(res,200,data);return;
+          userFor(fresh,portal);const data=snapshot(u,fresh);attempts.delete(keys[0]);if(s?.portal===portal)sessions.delete(sid);storeSession(key,fresh);setCookie(key,43200);send(res,200,data);return;
         }
         const u=userFor(s,portal);
         if(post)requireThat(req.headers['x-csrf-token']===s.csrf,403,'Reload before making changes.');
         if(path==='/api/session'&&!post){send(res,200,snapshot(u,s));return;}
         if(path==='/api/logout'&&post){sessions.delete(sid);setCookie('',0);send(res,200,{ok:true});return;}
-        if(path==='/api/terms' && post){
-          const body=await jsonBody(req,512);
-          requireThat(sessions.get(sid)===s,401,'Sign in again.');
-          const account=userFor(s,portal);
-          requireThat(body.version===termsVersion && body.hash===termsHash,409,'Terms changed. Reload to read the current version.');
-          db.prepare('INSERT INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) VALUES(?,?,?,?) ON CONFLICT(account_id,version,content_hash) DO NOTHING')
-            .run(account.id,termsVersion,termsHash,new Date().toISOString());
-          send(res,200,snapshot(account,s));return;
+        const {state:workforceState}=readBooks(db),scope={companyId:url.searchParams.get('companyId')||undefined,employeeId:url.searchParams.get('employeeId')||undefined};
+        if(path==='/api/records'&&!post){if(portal==='main')requireArea(db,u,'Employee records');const r=recordsView(db,u,workforceState,scope);send(res,200,portal==='worker'?workerRecords(db,u,r):r);return;}
+        if(path==='/api/benefits'&&!post){if(portal==='main')requireArea(db,u,'Benefits administration');else requireWorkerFeature(db,u,'Benefits');send(res,200,benefitsView(db,u,workforceState,scope));return;}
+        if(path.startsWith('/api/records/file/')&&!post){if(portal==='main')requireArea(db,u,'Employee records');else requireWorkerFeature(db,u,'Pay');const f=recordFile(db,u,workforceState,decodeURIComponent(path.slice(18)));res.writeHead(200,{'Content-Type':f.mime,'Content-Disposition':'attachment; filename="'+f.filename.replace(/[^a-zA-Z0-9._-]/g,'_')+'"'});res.end(f.bytes);return;}
+        if(path.startsWith('/api/benefits/file/')&&!post){if(portal==='main')requireArea(db,u,'Benefits administration');else requireWorkerFeature(db,u,'Benefits');const f=benefitFile(db,u,workforceState,decodeURIComponent(path.slice(19)));res.writeHead(200,{'Content-Type':f.mime,'Content-Disposition':'attachment; filename="'+f.filename.replace(/[^a-zA-Z0-9._-]/g,'_')+'"'});res.end(f.bytes);return;}
+        if(post&&['/api/records/action','/api/benefits/action'].includes(path)){
+          const kind=path.includes('/records/')?'records':'benefits';if(portal==='main')requireArea(db,u,kind==='records'?'Employee records':'Benefits administration');
+          const p=await jsonBody(req,15*1024*1024);
+          if(portal==='worker')requireWorkerFeature(db,u,kind==='benefits'?'Benefits':p.action?.type==='review-acknowledge'?'Reviews':'My Profile');
+          const result=tx(db,()=>{const active=userFor(s,portal),{state}=readBooks(db);return kind==='records'?recordsCommand(db,active,state,p.action):benefitsCommand(db,active,state,p.action);});
+          send(res,200,{result,...(portal==='worker'?snapshot(userFor(s,portal),s):{})});return;
         }
-        requireThat(hasAccepted(u),428,'Read and agree to the Terms of Service first.');
+        if(portal==='main'&&path==='/api/identity'&&!post){requireArea(db,u,'Identity connectors');send(res,200,identity.view(u,workforceState,scope));return;}
+        if(portal==='main'&&path==='/api/identity/action'&&post){requireArea(db,u,'Identity connectors');const p=await jsonBody(req,2*1024*1024);const result=await identity.command(u,workforceState,p.action);send(res,200,{result});return;}
+        if(portal==='main'&&path==='/api/payroll/deductions'&&!post){requireArea(db,u,'Payroll');send(res,200,{deductions:effectivePayrollDeductions(db,u,workforceState,scope.companyId,url.searchParams.get('payDate'))});return;}
+        if(portal==='main'&&path==='/api/admin/employee-erp'&&post){
+          owner(u);const p=await jsonBody(req,16384),c=workforceState.companies.find(c=>c.id===p.companyId);
+          requireThat(c?.employees.some(e=>e.id===p.employeeId)&&typeof p.enabled==='boolean'&&Array.isArray(p.areas)&&p.areas.every(a=>ERP_AREAS.includes(a)),400,'Choose an employee and permitted ERP areas.');
+          tx(db,()=>{db.prepare('INSERT INTO employee_erp_flags VALUES(?,?,?,?) ON CONFLICT(company,employee) DO UPDATE SET enabled=excluded.enabled,areas=excluded.areas').run(p.companyId,p.employeeId,Number(p.enabled),JSON.stringify(p.areas));
+            for(const row of db.prepare("SELECT * FROM accounts WHERE employeeId=? AND role NOT IN ('owner','worker')").all(p.employeeId))if(JSON.parse(row.assignments).includes(p.companyId))db.prepare('UPDATE accounts SET active=?,authVersion=authVersion+1 WHERE id=?').run(Number(p.enabled),row.id);
+            audit(db,u,p.companyId,'ERP access flags',JSON.stringify({employeeId:p.employeeId,enabled:p.enabled,areas:p.areas}));});send(res,200,{ok:true});return;
+        }
+        if(portal==='main'&&path==='/api/admin/employee-features'&&post){
+          owner(u);const p=await jsonBody(req,16384),c=workforceState.companies.find(c=>c.id===p.companyId);
+          requireThat(c?.employees.some(e=>e.id===p.employeeId)&&Array.isArray(p.features)&&new Set(p.features).size===p.features.length&&p.features.every(f=>WORKER_FEATURES.includes(f)),400,'Choose valid employee features.');
+          requireThat(p.features.includes('Time')||!db.prepare('SELECT 1 FROM worker_shifts WHERE company=? AND employee=? AND ended IS NULL').get(p.companyId,p.employeeId),409,'Close the employee’s open shift before disabling Time.');
+          tx(db,()=>{db.prepare('INSERT INTO employee_portal_flags VALUES(?,?,?) ON CONFLICT(company,employee) DO UPDATE SET features=excluded.features').run(p.companyId,p.employeeId,JSON.stringify(p.features));audit(db,u,p.companyId,'employee feature flags',JSON.stringify({employeeId:p.employeeId,features:p.features}));});send(res,200,{ok:true});return;
+        }
         if(portal==='worker'){
           requireThat(post&&path==='/api/worker/action',403,'Worker portal access only.');
-          const p=await jsonBody(req,16384);requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);
+          requireWorkerFeature(db,u,'Time');const p=await jsonBody(req,16384);requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);
           tx(db,()=>{const {state}=readBooks(db);workerCommand(db,active,state,p.action);audit(db,active,active.assignments[0],'worker '+p.action.type,'Clock or correction event');});
           send(res,200,snapshot(active,s));return;
         }
         if(!post){
-          if(path==='/api/admin/users'){owner(u);send(res,200,{users:db.prepare('SELECT * FROM accounts ORDER BY name,username').all().map(r=>publicUser(safeUser(r)))});return;}
-          if(path==='/api/approvals'){send(res,200,{approvals:approvalList(db,u)});return;}
-          if(path==='/api/audit'){send(res,200,{events:auditEvents(db,u)});return;}
+          if(path==='/api/admin/users'){owner(u);send(res,200,{users:db.prepare('SELECT * FROM accounts ORDER BY name,username').all().map(r=>({...publicUser(safeUser(r)),areas:accountAreas(db,safeUser(r)),configured:!!r.hash&&!r.hash.startsWith('!pending-invite:')})),employeeErp:db.prepare('SELECT * FROM employee_erp_flags').all().map(r=>({...r,enabled:!!r.enabled,areas:JSON.parse(r.areas)})),employeeFeatures:db.prepare('SELECT * FROM employee_portal_flags').all().map(r=>({...r,features:JSON.parse(r.features)}))});return;}
+          if(path==='/api/approvals'){requireArea(db,u,'Approvals');send(res,200,{approvals:approvalList(db,u)});return;}
+          if(path==='/api/audit'){requireArea(db,u,'Audit trail');send(res,200,{events:auditEvents(db,u)});return;}
           deny(404,'Endpoint unavailable.');
         }
         const transfer=path.startsWith('/api/transfer/');
@@ -124,8 +165,12 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         const active=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');return userFor(s,portal);};
         let extras={};
         if(path==='/api/action'){if(p.action&&!p.action.requestId)p.action.requestId=p.requestId;extras=tx(db,()=>actionFor(db,active(),p));}
-        else if(path==='/api/approve'){tx(db,()=>decide(db,active(),p));}
+        else if(path==='/api/approve'){requireArea(db,u,'Approvals');tx(db,()=>decide(db,active(),p));}
         else if(path==='/api/admin/user'){
+          if(!['worker','owner'].includes(p.role)){
+            requireThat(Array.isArray(p.areas),400,'Select the ERP areas for this login.');
+            if(p.employeeId&&p.active!==false){const flag=db.prepare('SELECT * FROM employee_erp_flags WHERE company=? AND employee=?').get(p.assignments?.[0],p.employeeId);requireThat(flag?.enabled&&p.areas.every(a=>JSON.parse(flag.areas).includes(a)),403,'Enable this employee’s ERP access and areas first.');}
+          }
           const hash=p.password?await limited(()=>passwordHash(p.password)):null;
           const id=tx(db,()=>putUser(db,active(),p,hash));
           for(const [key,v] of sessions)if(v.userId===id&&key!==sid)sessions.delete(key);

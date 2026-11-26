@@ -1,7 +1,11 @@
 import {esc,btn,table,panel,input,select,choices,mapping,options,money,pretty} from '/shared/views.mjs';
 import {check,accounts} from '/shared/core.mjs';
+import {recordsContent,recordsAction} from './record-admin.mjs';
+import {benefitsContent,benefitsAction} from './benefit-admin.mjs';
+import {identityContent,identityAction,employeeAccessContent} from './identity-admin.mjs';
 
-const roleLabels={owner:'Owner',manager:'Manager',bookkeeper:'Bookkeeper',viewer:'Viewer',worker:'Worker'};
+const roleLabels={owner:'Owner',manager:'Manager',bookkeeper:'Bookkeeper',viewer:'Viewer',worker:'Worker',hr:'Human Resources',payroll:'Payroll'};
+const erpAreas=['Overview','Directory','Sales','Purchasing','Jobs & time','Warehouse','Assembly','Fixed assets','Accounting','Banking','Reports','Payroll','History','Company setup','Approvals','Audit trail','Employee records','Benefits administration','Identity connectors'];
 const labels={cash:'Cash',receivables:'Receivables',payables:'Payables',inventory:'Inventory',netIncome:'Net income',trialDifference:'Trial balance difference'};
 function selected(name,caption,pairs,current){
   return `<label>${esc(caption)}<select name="${esc(name)}">${pairs.map(([value,label])=>`<option value="${esc(value)}"${value===current?' selected':''}>${esc(label)}</option>`).join('')}</select></label>`;
@@ -17,7 +21,7 @@ function userAccess(data,session){
     `${esc(u.name)}<br><small>${esc(u.username)}</small>`,esc(roleLabels[u.role]||u.role),
     u.role==='owner'?'All companies':(u.assignments||[]).map(id=>esc(companyLabel(session,id))).join(', ')||'None',
     u.active?'Enabled':'Disabled',btn('edit-user','Edit',u.id)
-  ])),btn('add-user','Add user','','primary'));
+  ])),btn('add-user','Add ERP user','','primary'))+employeeAccessContent(data,session);
 }
 function approvals(data,session){
   const permitted=['owner','manager'].includes(session.user.role);
@@ -41,10 +45,13 @@ function transferView(session){
     panel('Full Suite to Lite','<p>Download an encrypted owner snapshot for restore in FirmQuill Lite. It includes all company books, linked documents, groups, history and attachments.</p>',hasBooks?btn('portable-export','Export encrypted snapshot'):'')+
     panel('Full Suite records','<p>Use a Full Suite database backup for disaster recovery. User accounts, roles, worker clock records, correction requests, server audit events and pending approvals stay with the installation. Approved time posted to company books travels in the portable snapshot.</p>');
 }
-function suiteContent(page,data,session){
+function suiteContent(page,data,session,companyId){
   if(page==='Portable transfers')return transferView(session);
   if(!data)return '<p class="quiet">Loading records…</p>';
   if(data.error)return `<div class="callout warn">${esc(data.error)}</div>`;
+  if(page==='Employee records')return recordsContent(data,session,companyId);
+  if(page==='Benefits administration')return benefitsContent(data,session,companyId);
+  if(page==='Identity connectors')return identityContent(data,session,companyId);
   return {'User access':userAccess,'Approvals':approvals,'Audit trail':audits}[page](data,session);
 }
 function editUser(user,ctx){
@@ -53,9 +60,10 @@ function editUser(user,ctx){
   const fields=input('name','Display name','text',user?.name||'','maxlength="160"')+
     input('username','Username','text',user?.username||'','autocomplete="off" maxlength="100" autocapitalize="none" spellcheck="false"')+
     (user?'<label>Reset password (optional)<input type="password" name="password" autocomplete="new-password" minlength="12"></label>':input('password','Initial password','password','','autocomplete="new-password" minlength="12"'))+
-    selected('role','Role',Object.entries(roleLabels),user?.role||'viewer')+
-    `<fieldset><legend>Assigned companies</legend>${choices('assignments',mapping(companies),user?.assignments||[])}</fieldset>`+
-    `<label>Employee linked to a worker login<select name="employeeId"><option value="">Choose employee</option>${companies.map(c=>`<optgroup label="${esc(c.name)}">${c.employees.map(p=>`<option value="${esc(p.id)}"${p.id===user?.employeeId?' selected':''}>${esc(p.name)}</option>`).join('')}</optgroup>`).join('')}</select></label>`+
+    selected('role','Role',Object.entries(roleLabels).filter(([r])=>user?.role==='worker'?r==='worker':r!=='worker'),user?.role||'viewer')+
+    `<fieldset data-company-assignments><legend>Assigned companies</legend>${choices('assignments',mapping(companies),user?.assignments||[])}</fieldset>`+
+    `<label>Linked employee (optional for ERP)<select name="employeeId"><option value="">No employee link</option>${companies.map(c=>`<optgroup label="${esc(c.name)}">${c.employees.map(p=>`<option value="${esc(p.id)}"${p.id===user?.employeeId?' selected':''}>${esc(p.name)}</option>`).join('')}</optgroup>`).join('')}</select></label>`+
+    `<fieldset data-erp-areas><legend>Permitted ERP areas</legend>${choices('areas',erpAreas.map(a=>[a,a]),user?.areas||[])}</fieldset>`+
     selected('active','Account access',[['yes','Enabled'],['no','Disabled']],user?.active===false?'no':'yes');
   formModal(user?'Edit individual account':'Add individual account',fields,user?'Save account':'Create account',async(v,f)=>{
     const assignments=f.getAll('assignments'),worker=v.role==='worker';
@@ -64,7 +72,7 @@ function editUser(user,ctx){
       const company=companies.find(c=>c.id===assignments[0]);
       check(company?.employees.some(p=>p.id===v.employeeId),'Choose an employee in the assigned company.');
     }
-    const body={name:v.name.trim(),username:v.username.trim(),role:v.role,active:v.active==='yes',assignments:v.role==='owner'?[]:assignments,employeeId:worker?v.employeeId:'',revision:session.revision};
+    const body={name:v.name.trim(),username:v.username.trim(),role:v.role,active:v.active==='yes',assignments:v.role==='owner'?[]:assignments,employeeId:v.employeeId||'',areas:f.getAll('areas'),revision:session.revision};
     if(user){body.id=user.id;body.version=user.version;}
     if(v.password)body.password=v.password;
     const result=await api('admin/user',body);
@@ -74,8 +82,9 @@ function editUser(user,ctx){
   const update=()=>{
     const role=dialog.querySelector('[name=role]').value;
     const emp=dialog.querySelector('[name=employeeId]');
-    emp.required=role==='worker';emp.parentElement.hidden=role!=='worker';
-    dialog.querySelector('fieldset').hidden=role==='owner';
+    emp.required=role==='worker';emp.parentElement.hidden=role==='owner';
+    dialog.querySelector('[data-company-assignments]').hidden=role==='owner';
+    dialog.querySelector('[data-erp-areas]').hidden=['worker','owner'].includes(role);
   };
   dialog.onchange=update;update();
 }
@@ -138,6 +147,7 @@ function exportLite(ctx){
   });
 }
 async function suiteAction(type,key,ctx){
+  if(await recordsAction(type,key,ctx)||await benefitsAction(type,key,ctx)||await identityAction(type,key,ctx))return true;
   switch(type){
     case 'add-user':editUser(null,ctx);return true;
     case 'edit-user':editUser(ctx.auxiliary.users.find(u=>u.id===key),ctx);return true;

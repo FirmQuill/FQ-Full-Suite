@@ -29,7 +29,7 @@ if(process.env.FIRMQUILL_BROWSER_EXE)test('main portal opens a migrated tenant, 
       await p.goto(suite.mainUrl);
       const f=p.locator('#login');
       await f.locator('[name=username]').fill(username);await f.locator('[name=password]').fill(password);
-      await f.locator('button').click();await p.getByRole('button',{name:'I agree to the Terms of Service'}).click();await p.locator('.toolbar').waitFor();
+      await f.locator('button').click();await p.locator('.toolbar').waitFor();
     }
     await login(page,'test-owner');await page.getByRole('heading',{name:'Set up your books'}).waitFor();
     await click(page,'nav','Portable transfers');await click(page,'portable-import');
@@ -42,6 +42,7 @@ if(process.env.FIRMQUILL_BROWSER_EXE)test('main portal opens a migrated tenant, 
     await click(page,'nav','User access');await click(page,'add-user');
     const uf=modal(page);await uf.locator('[name=name]').fill('Synthetic Bookkeeper');await uf.locator('[name=username]').fill('test-clerk');await uf.locator('[name=password]').fill(password);
     await uf.locator('[name=role]').selectOption('bookkeeper');await uf.locator(`[name=assignments][value="${snapshot.companies[0].id}"]`).check();
+    for(const area of ['Overview','Accounting','Directory','Approvals'])await uf.locator(`[name=areas][value="${area}"]`).check();
     await submit(page);await page.getByRole('cell',{name:/Synthetic Bookkeeper/}).waitFor();
     const clerkContext=await browser.newContext(),clerk=await clerkContext.newPage();clerk.on('pageerror',e=>errors.push(e.message));
     await login(clerk,'test-clerk');assert.equal(await clerk.locator('#company option').count(),1);assert.equal(await clerk.locator('nav [data-key="User access"]').count(),0);
@@ -64,7 +65,7 @@ if(process.env.FIRMQUILL_BROWSER_EXE)test('main portal opens a migrated tenant, 
     assert.equal(parsed.state.companies[0].id,snapshot.companies[0].id);
     await click(page,'nav','User access');
     await page.getByRole('row').filter({hasText:'Synthetic Bookkeeper'}).getByRole('button',{name:'Edit'}).click();
-    await modal(page).locator('[name=active]').selectOption('no');await submit(page);await page.getByRole('cell',{name:'Disabled',exact:true}).waitFor();
+    await modal(page).locator('[name=active]').selectOption('no');await submit(page);await page.locator('tr').filter({hasText:'Synthetic Bookkeeper'}).getByRole('cell',{name:'Disabled',exact:true}).waitFor();
     await click(clerk,'refresh');await clerk.locator('#login').waitFor();
     await click(page,'logout');await page.locator('#login').waitFor();
     assert.ok(!(await page.locator('body').innerText()).includes('Owner saved contact'));

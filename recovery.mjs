@@ -20,7 +20,7 @@ async function keyFor(password, salt) {
 
 function verifyDatabase(db) {
   if (db.prepare('PRAGMA application_id').get().application_id !== 1179735372 ||
-      db.prepare('PRAGMA user_version').get().user_version !== 1) throw Error('Expected a FirmQuill Full Suite schema version 1 database.');
+      ![1,2].includes(db.prepare('PRAGMA user_version').get().user_version)) throw Error('Expected a FirmQuill Full Suite schema version 1 or 2 database.');
   const result = db.prepare('PRAGMA integrity_check(1)').get();
   if (result.integrity_check !== 'ok' || db.prepare('PRAGMA foreign_key_check').get()) throw Error('SQLite integrity or foreign-key verification failed.');
   const schema = new Set(db.prepare("SELECT name FROM sqlite_schema WHERE type='table'").all().map(row => row.name));
@@ -103,7 +103,7 @@ export async function backupDatabase(dbPath, destination, password) {
     cipher.setAAD(header);
     const chunks = [header, cipher.update(image), cipher.final(), cipher.getAuthTag()];
     await publish(destination, chunks);
-    return {databaseBytes: image.length, schema: 1};
+    return {databaseBytes: image.length, schema: Buffer.from(image.subarray(60,64)).readUInt32BE(0)};
   } finally { key.fill(0); image?.fill(0); }
 }
 
@@ -128,7 +128,7 @@ export async function restoreDatabase(archivePath, destination, password) {
       try { verifyDatabase(db); } finally { db.close(); }
       await cleanDatabaseTarget(destination);
     });
-    return {databaseBytes: decoded.length, schema: 1};
+    return {databaseBytes: decoded.length, schema: decoded.readUInt32BE(60)};
   } finally { key.fill(0); decoded?.fill(0); }
 }
 

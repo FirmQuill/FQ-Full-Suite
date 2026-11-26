@@ -1,0 +1,33 @@
+import {newVault,apply} from '../shared/core.mjs';
+import {tx,readBooks,saveBooks,passwordHash,putUser,safeUser} from '../store.mjs';
+import {setEmployeeProfile,recordsCommand} from '../records.mjs';
+import {benefitsCommand} from '../benefits.mjs';
+
+const addDays=(day,n)=>new Date(Date.parse(day+'T12:00:00Z')+n*86400000).toISOString().slice(0,10);
+
+// Explicitly invoked fixture only. This never runs during normal startup or upgrades.
+// The caller supplies a password; the source contains no default credentials.
+export async function seedWorkforceDemo(db,{password,at=new Date()}={}){
+  if(db.prepare('SELECT 1 FROM accounts LIMIT 1').get()||readBooks(db).state.companies.length)throw Error('Fictional demo data requires a new, empty database.');
+  const hash=await passwordHash(password),today=new Intl.DateTimeFormat('en-CA',{timeZone:'America/Denver',year:'numeric',month:'2-digit',day:'2-digit'}).format(at);
+  let state=newVault('FICTIONAL — Quill Warehouse Demo',['employees','jobs','time']);const companyId=state.companies[0].id;
+  for(const action of [{type:'job',name:'FICTIONAL — Warehouse receiving'},{type:'employee',name:'FICTIONAL — Avery Warehouse',rate:2500,state:'CO',locality:'Fictional Town'},{type:'employee',name:'FICTIONAL — Jordan Warehouse',rate:2500,state:'CO',locality:'Fictional Town'}])state=apply(state,companyId,{...action,date:today});
+  const employeeId=state.companies[0].employees[0].id,otherEmployeeId=state.companies[0].employees[1].id;
+  const ids={};let owner,hr,payroll,manager,worker;
+  tx(db,()=>{
+    ids.owner=putUser(db,null,{name:'FICTIONAL — Demo Owner',username:'demo-owner',role:'owner',assignments:[]},hash,{bootstrap:true});
+    owner=safeUser(db.prepare('SELECT * FROM accounts WHERE id=?').get(ids.owner));saveBooks(db,state);
+    for(const [key,username,name,role,person,areas] of [['hr','demo-hr','FICTIONAL — Morgan HR','hr','',['Employee records','Benefits administration']],['payroll','demo-payroll','FICTIONAL — Riley Payroll','payroll','',['Employee records','Benefits administration','Payroll']],['manager','demo-manager','FICTIONAL — Sam Manager','manager','',['Employee records','Jobs & time','Approvals']],['worker','demo-worker','FICTIONAL — Avery Warehouse','worker',employeeId,[]],['otherWorker','demo-other-worker','FICTIONAL — Jordan Warehouse','worker',otherEmployeeId,[]]]){
+      ids[key]=putUser(db,owner,{name,username,role,assignments:[companyId],employeeId:person,areas},hash);
+    }
+    hr=safeUser(db.prepare('SELECT * FROM accounts WHERE id=?').get(ids.hr));payroll=safeUser(db.prepare('SELECT * FROM accounts WHERE id=?').get(ids.payroll));manager=safeUser(db.prepare('SELECT * FROM accounts WHERE id=?').get(ids.manager));worker=safeUser(db.prepare('SELECT * FROM accounts WHERE id=?').get(ids.worker));
+    for(const person of [employeeId,otherEmployeeId])setEmployeeProfile(db,state,companyId,person,{hireDate:today,department:'Warehouse',title:'Warehouse associate',location:'Fictional receiving location',workEmail:person===employeeId?'avery@fictional.example':'jordan@fictional.example',businessPhone:'555-0100',managerAccountId:ids.manager,groupIds:['warehouse'],projectAssignments:[{jobId:state.companies[0].jobs[0].id,start:today,end:'',role:'Receiving'}],education:['FICTIONAL — warehouse training'],certifications:['FICTIONAL — sample certification']},ids.owner);
+    recordsCommand(db,owner,state,{type:'company-record-settings',companyId,settings:{contacts:[{id:'fictional-hr',name:'FICTIONAL — Morgan HR',title:'HR workflow contact',email:'hr@fictional.example',phone:'555-0101'},{id:'fictional-payroll',name:'FICTIONAL — Riley Payroll',title:'Payroll contact',email:'payroll@fictional.example',phone:'555-0102'}],hrContactId:'fictional-hr',payrollContactId:'fictional-payroll',locations:{},fieldRules:{}}});
+    const published=recordsCommand(db,manager,state,{type:'review-save',companyId,employeeId,title:'FICTIONAL — Welcome review',body:'This fictional sample demonstrates employee review publication and acknowledgment. It is not an assessment of a real person.'});
+    recordsCommand(db,manager,state,{type:'review-publish',reviewId:published.reviewId,version:1});
+    recordsCommand(db,manager,state,{type:'review-save',companyId,employeeId,title:'FICTIONAL — Private draft',body:'This draft must remain private until the assigned manager publishes it.'});
+    const configuration={timezone:'America/Denver',hrOwnerId:ids.hr,defaultInitial:{opensDays:0,closesDays:30},groups:[{id:'warehouse',name:'Warehouse',priority:10,initial:{opensDays:0,closesDays:30}}],planYears:[{id:'2027',label:'2027',startDate:'2027-01-01',endDate:'2027-12-31'},{id:'2028',label:'2028',startDate:'2028-01-01',endDate:'2028-12-31'}],plans:[{id:'fictional-medical-2027',planYear:'2027',category:'Medical',name:'FICTIONAL — Medical 2027',groupIds:['warehouse'],waiverAllowed:true,tiers:[{id:'employee',name:'Employee only',employeeCostCents:10000,employerCostCents:50000},{id:'family',name:'Family',employeeCostCents:25000,employerCostCents:80000}]},{id:'fictional-medical-2028',planYear:'2028',category:'Medical',name:'FICTIONAL — Medical 2028',groupIds:['warehouse'],waiverAllowed:true,tiers:[{id:'employee',name:'Employee only',employeeCostCents:11000,employerCostCents:55000},{id:'family',name:'Family',employeeCostCents:26000,employerCostCents:85000}]}],openWindows:[{id:'fictional-oe-2028',planYear:'2028',groupId:'warehouse',startDate:addDays(today,-7),endDate:addDays(today,30),effectiveDate:'2028-01-01'}],individualOverrides:[employeeId,otherEmployeeId].map(employeeId=>({employeeId,planYear:'2027',startDate:addDays(today,-7),endDate:addDays(today,30),effectiveDate:'2027-01-01'})),retirementPlans:[{id:'fictional-401k',name:'FICTIONAL — 401(k) contribution',groupIds:['warehouse'],selfService:true,taxTreatments:['pre-tax','roth'],units:['percent','amount'],control:'firmquill',maxPercent:100,maxAmountCents:1000000,schedule:{minimumLeadDays:0,effectiveRule:'requested'},hrOwnerId:ids.hr},{id:'fictional-provider',name:'FICTIONAL — Provider retirement plan',groupIds:['warehouse'],selfService:true,taxTreatments:['pre-tax'],units:['percent'],control:'provider',providerLabel:'FICTIONAL local review handoff',schedule:{minimumLeadDays:0,effectiveRule:'requested'},hrOwnerId:ids.hr}]};
+    benefitsCommand(db,owner,state,{type:'benefits-config',companyId,version:0,configuration},at);
+  });
+  return {state,companyId,employeeId,otherEmployeeId,jobId:state.companies[0].jobs[0].id,ids,users:{owner,hr,payroll,manager,worker},usernames:{owner:'demo-owner',hr:'demo-hr',payroll:'demo-payroll',manager:'demo-manager',worker:'demo-worker',otherWorker:'demo-other-worker'},today,initialYear:'2027',openYear:'2028'};
+}
