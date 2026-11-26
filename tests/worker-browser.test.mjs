@@ -1,3 +1,4 @@
+import {acceptIfRequired} from './agreement-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,rm,rmdir} from 'node:fs/promises';
@@ -35,7 +36,7 @@ test('worker and manager portals: mobile clock-in/out, two correction reviews, a
     const errors=[];for(const page of [worker,manager]){page.setDefaultTimeout(9000);page.on('pageerror',err=>errors.push(err.message));}
     async function login(page,url,username){
       await page.goto(url);const f=page.locator('form#login');await f.locator('[name=username]').fill(username);
-      await f.locator('[name=password]').fill(password);await f.getByRole('button',{name:'Sign in'}).click();
+      await f.locator('[name=password]').fill(password);await f.getByRole('button',{name:'Sign in'}).click();await acceptIfRequired(page);
     }
     await login(worker,suite.workerUrl,'punchuser');
     await worker.getByRole('button',{name:'Clock in',exact:true}).click();

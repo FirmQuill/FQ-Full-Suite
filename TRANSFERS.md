@@ -7,6 +7,12 @@ Choose a **portable snapshot** to move books between editions. Choose a **Full S
 | `.firmquill` portable snapshot, including supported older `.fieldledger` backups | All companies in the vault, settings, stable record IDs, documents, entries, balances, approved time, business history, bank matches, assets, inventory, attachments and consolidation groups | Lite vault owner or signed-in Full Suite owner |
 | `.fqdb` database recovery archive | The entire shared SQLite database, including password hashes, company assignments, audit, pending approvals, request IDs, original punches and correction history | Operator with local database access and a private recovery password |
 
+## Choose an onboarding path
+
+- Use **Portable transfers → Preview Lite backup** in an empty Full Suite database for a compatible encrypted FirmQuill books snapshot. Preview company counts and balances, then confirm the import. This does not merge into existing books or copy worker portal history, paystubs, reviews, benefit elections, or login credentials.
+- Use **whole-database recovery** below when moving a company from one compatible Full Suite host to another. It restores the installation, including Full Suite-only records and logins, into a fresh database path. It is not a file upload into a live company.
+- The QuickBooks Online US and Wave US exchange here is for supported checking-statement CSVs. It is not a full company-file converter. For other apps, have the source owner export the required records, determine field and account mappings on a test copy, and reconcile balances and open items before using migrated books.
+
 ## Move Lite books into Full Suite
 
 1. Open the source vault in Lite and download an encrypted backup under **Company setup**. Keep its password and a separate copy of the original backup. For the supplied January 2026 sample, record each company's cash, open receivables, inventory, net income and trial balance before transfer.

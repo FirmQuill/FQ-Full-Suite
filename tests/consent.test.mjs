@@ -49,7 +49,14 @@ test('legacy assent migrates without changing books; each user/version/hash rema
   source=source.replace("termsVersion = '1.0'","termsVersion = '1.1'").replace('Version 1.0 ','Version 1.1 ');await writeFile(file,source);
   const next=await import(pathToFileURL(join(variant,'server.mjs'))),terms=await import(pathToFileURL(file));
   suite=await next.createSuite({database,mainPort:0,workerPort:0});a=await client(suite.mainUrl,'owner');w=await client(suite.workerUrl,'worker');
-  assert.equal(a.login.body.termsRequired,'1.1');assert.equal(w.login.body.termsRequired,'1.1');assert.equal((await a.request('admin/users')).status,428);
+  assert.equal(a.login.body.termsRequired,'1.1');assert.equal(w.login.body.termsRequired,'1.1');
+  assert.deepEqual(Object.keys(a.login.body).sort(),['csrf','termsRequired']);
+  assert.deepEqual(Object.keys(w.login.body).sort(),['csrf','termsRequired']);
+  assert.equal((await a.request('admin/users')).status,428);
+  assert.equal((await a.request('transfer/preview',{})).status,428);
+  assert.equal((await a.request('transfer/import',{})).status,428);
+  assert.equal((await w.request('records')).status,428);
+  assert.equal((await w.request('worker-brand/logo')).status,428);
   assert.equal((await a.request('terms',{version:'1.1',hash:digest(terms.termsText)})).status,200);
   assert.deepEqual((await a.request('session')).body.state,state);assert.equal((await w.request('worker/action',{})).status,428);
   await suite.close();suite=null;

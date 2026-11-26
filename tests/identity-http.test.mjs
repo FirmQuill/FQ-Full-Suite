@@ -1,3 +1,4 @@
+import {receipt} from './agreement-fixture.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -15,7 +16,7 @@ async function request(origin,path,{method='GET',body,cookie='',csrf='',headers=
   const response=await fetch(origin+path,{method,headers:{Origin:origin,Cookie:cookie,'X-CSRF-Token':csrf,...(body!==undefined?{'Content-Type':'application/json'}:{}),...headers},body:body===undefined?undefined:JSON.stringify(body)});
   const raw=await response.text();return {status:response.status,headers:response.headers,raw,data:raw?JSON.parse(raw):null};
 }
-async function session(origin,username){const login=await request(origin,'/api/login',{method:'POST',body:{username,password}});assert.equal(login.status,200,login.raw);return {origin,cookie:login.headers.get('set-cookie').split(';')[0],csrf:login.data.csrf,data:login.data};}
+async function session(origin,username){const login=await request(origin,'/api/login',{method:'POST',body:{username,password}});assert.equal(login.status,200,login.raw);const context={origin,cookie:login.headers.get('set-cookie').split(';')[0],csrf:login.data.csrf,data:login.data};if(login.data.termsRequired){const agreed=await call(context,'/api/terms',receipt);assert.equal(agreed.status,200);context.data=agreed.data;}return context;}
 function call(client,path,body){return request(client.origin,path,{method:body===undefined?'GET':'POST',body,cookie:client.cookie,csrf:client.csrf});}
 async function fixture(t){
   const directory=await mkdtemp(join(tmpdir(),'firmquill-identity-http-')),database=join(directory,'fixture.sqlite'),db=openStore(database),state=sampleVault();tx(db,()=>saveBooks(db,state));

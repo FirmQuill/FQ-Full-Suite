@@ -1,3 +1,4 @@
+import {acceptIfRequired} from './agreement-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdtemp,readFile,rm} from 'node:fs/promises';
@@ -29,7 +30,7 @@ if(process.env.FIRMQUILL_BROWSER_EXE)test('main portal opens a migrated tenant, 
       await p.goto(suite.mainUrl);
       const f=p.locator('#login');
       await f.locator('[name=username]').fill(username);await f.locator('[name=password]').fill(password);
-      await f.locator('button').click();await p.locator('.toolbar').waitFor();
+      await f.locator('button').click();await acceptIfRequired(p);await p.locator('.toolbar').waitFor();
     }
     await login(page,'test-owner');await page.getByRole('heading',{name:'Set up your books'}).waitFor();
     await click(page,'nav','Portable transfers');await click(page,'portable-import');

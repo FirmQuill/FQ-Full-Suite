@@ -1,3 +1,4 @@
+import {openAccount} from '/legal/account.mjs';
 import {recommended,modules,accounts,manualAccounts,outstanding,sum,cents,dollars,check,statements} from '/shared/core.mjs';
 import {previewBankCsv,exportBankCsv,reconcileBankStatement} from '/shared/interop.mjs';
 import {states,ficaPreview,incomeTaxPreview,payrollGate} from '/shared/payroll-rules.mjs';
@@ -60,7 +61,7 @@ async function api(path,body){
     }
     throw Error(typeof data.error==='string'?data.error:`Request failed (${response.status}).`);
   }
-  return data;
+  return openAccount(data);
 }
 function useSession(next){
   check(next?.user&&Array.isArray(next?.state?.companies),'The server returned an incomplete workspace. Sign in again.');

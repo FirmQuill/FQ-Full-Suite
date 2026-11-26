@@ -1,3 +1,4 @@
+import {receipt} from './agreement-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DatabaseSync} from 'node:sqlite';
@@ -29,8 +30,9 @@ async function client(url,username,password){
     const data=response.headers.get('content-type')?.includes('application/json')?await response.json():Buffer.from(await response.arrayBuffer());
     return {status:response.status,data,headers:response.headers};
   }
-  const login=username?await request('login',{username,password}):null;
+  let login=username?await request('login',{username,password}):null;
   if(login?.status===200){jar.cookie=login.headers.get('set-cookie').split(';')[0];jar.csrf=login.data.csrf;}
+  if(login?.data?.termsRequired)login=await request('terms',receipt);
   return {login,request};
 }
 async function fixture(t){

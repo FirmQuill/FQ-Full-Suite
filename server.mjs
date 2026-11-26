@@ -1,6 +1,9 @@
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,createHash} from 'node:crypto';
+import {termsVersion,termsText} from './web/legal/terms.mjs';
+import {legacyAgreement} from './web/legal/consent.mjs';
+const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 import {openStore,tx,readBooks,saveBooks,revisionCheck,audit,safeUser,owner,scoped,passwordHash,passwordMatches,putUser,actionFor,approvalList,decide,auditEvents,requireThat,workerView,workerCommand} from './store.mjs';
 import {inspectLite,exportLite,assertEmptyDestination} from './transfer.mjs';
 import {recordsView,recordsCommand,recordFile,employeeProfile} from './records.mjs';
@@ -28,6 +31,8 @@ async function jsonBody(req,max){
 function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHeader('Content-Type')||'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
 async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={}}){
   const db=openStore(database),sessions=new Map(),attempts=new Map();
+  if(termsVersion===legacyAgreement.version&&termsHash===legacyAgreement.hash)
+    db.prepare('INSERT OR IGNORE INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) SELECT account_id,version,?,accepted_at FROM terms_acceptances WHERE version=?').run(termsHash,termsVersion);
   const identity=createIdentityService({db,database,readBooks,saveBooks,passwordHash,putUser,...identityOptions});
   const dummyHash=await passwordHash(token()),servers=[];
   let expensive=0;
@@ -42,7 +47,11 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     if(u.role!=='worker'&&u.employeeId)requireThat(db.prepare('SELECT enabled FROM employee_erp_flags WHERE company=? AND employee=?').get(u.assignments[0],u.employeeId)?.enabled,401,'ERP access is disabled.');
     session.until=Date.now()+30*60000;return u;
   }
+  function hasAccepted(user){
+    return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);
+  }
   function snapshot(user,s,extras={}){
+    if(!hasAccepted(user))return {termsRequired:termsVersion,csrf:s.csrf};
     const {state,revision}=readBooks(db);
     const features=s.portal==='worker'?workerFeatures(db,user):[];
     const time=s.portal==='worker'?workerView(db,user,state):null;
@@ -65,7 +74,11 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(!path.startsWith('/api/')){
           requireThat(req.method==='GET'||req.method==='HEAD',405,'Method unavailable.');
           let name=path==='/'?'index.html':path.slice(1),root='web/'+portal+'/';
-          if(path.startsWith('/shared/')){
+          if(path.startsWith('/legal/')){
+            name=path.slice(7);
+            requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');
+            root='web/legal/';
+          }else if(path.startsWith('/shared/')){
             name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png'].includes(name)),404,'File unavailable.');root='shared/';
           }else requireThat((portal==='main'?mainFiles:workerFiles).has(name),404,'File unavailable.');
           const bytes=await readFile(new URL('./'+root+name,import.meta.url));res.writeHead(200,{'Content-Type':mime[name.split('.').pop()]});res.end(req.method==='HEAD'?undefined:bytes);return;
@@ -120,6 +133,15 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(post)requireThat(req.headers['x-csrf-token']===s.csrf,403,'Reload before making changes.');
         if(path==='/api/session'&&!post){send(res,200,snapshot(u,s));return;}
         if(path==='/api/logout'&&post){sessions.delete(sid);setCookie('',0);send(res,200,{ok:true});return;}
+        if(path==='/api/terms'&&post){
+          const p=await jsonBody(req,4096);
+          requireThat(sessions.get(sid)===s,401,'Sign in again.');
+          const u=userFor(s,portal);
+          requireThat(p.version===termsVersion&&p.hash===termsHash,409,'Terms changed. Reload to read the current version.');
+          db.prepare('INSERT INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) VALUES(?,?,?,?) ON CONFLICT(account_id,version,content_hash) DO NOTHING').run(u.id,termsVersion,termsHash,new Date().toISOString());
+          send(res,200,snapshot(u,s));return;
+        }
+        requireThat(hasAccepted(u),428,'Accept the current Terms of Service to use this portal.');
         const {state:workforceState}=readBooks(db),scope={companyId:url.searchParams.get('companyId')||undefined,employeeId:url.searchParams.get('employeeId')||undefined};
         if(portal==='worker'&&path==='/api/worker-brand/logo'&&!post){
           const logo=workerBrandLogo(db,workforceState,u.assignments[0]);

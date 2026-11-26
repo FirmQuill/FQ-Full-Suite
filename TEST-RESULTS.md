@@ -43,3 +43,7 @@ No external provider mutation or production payroll execution occurred. The inhe
 Migration ran on synthetic upgrade fixtures, not a selected business database. First startup against an existing schema-1 database applies the tested migration; retain a pre-upgrade backup. PDFs/evidence live in SQLite. The inherited 64 MiB recovery limit, protected host storage and separate connector-key backup are documented in OPERATIONS.md. Filesystem administrators can alter the database; application audit is not independent attestation.
 
 Nothing was published. FirmQuill Lite and 2027 payroll research were left unchanged.
+
+## Terms acceptance regression check
+
+November 26, 2026: 92 checks passed with Node 24.22.3 and Chromium on Linux, including the ERP and worker first-use dialogs, decline and retry, account-scoped hash receipts, import and employee endpoint gating, and the existing employee, branding, accounting and transfer checks. The approved agreement is unchanged.

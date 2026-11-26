@@ -1,3 +1,4 @@
+import {openAccount} from '/legal/account.mjs';
 import {selfserviceContent,selfserviceSubmit} from './selfservice.mjs';
 const app = document.querySelector('#app');
 const notice = document.querySelector('#notice');
@@ -43,7 +44,7 @@ async function api(path, body) {
     if(res.status===401 && path!=='login') login();
     throw Error(typeof payload.error === 'string' ? payload.error : 'The request could not be completed.');
   }
-  return payload;
+  return openAccount(payload);
 }
 function shiftCard(s) {
   const pending=s.reviews.some(r => r.kind==='Correction' && r.status==='pending');

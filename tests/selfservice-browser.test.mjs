@@ -1,3 +1,4 @@
+import {acceptIfRequired} from './agreement-fixture.mjs';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import {mkdir,mkdtemp,rm,rmdir} from 'node:fs/promises';
@@ -17,7 +18,7 @@ test('actual mobile and desktop portal: 2028 open first, 2027 initial second, as
     browser=await chromium.launch({executablePath:executable,headless:true});
     const worker=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true}),hr=await browser.newPage({viewport:{width:1280,height:900}}),errors=[];
     for(const page of [worker,hr]){page.setDefaultTimeout(15000);page.on('pageerror',error=>errors.push(error.message));}
-    async function login(page,url,username){await page.goto(url);const form=page.locator('form#login');await form.locator('[name=username]').fill(username);await form.locator('[name=password]').fill(password);await form.getByRole('button',{name:'Sign in',exact:true}).click();}
+    async function login(page,url,username){await page.goto(url);const form=page.locator('form#login');await form.locator('[name=username]').fill(username);await form.locator('[name=password]').fill(password);await form.getByRole('button',{name:'Sign in',exact:true}).click();await acceptIfRequired(page);}
     await login(worker,suite.workerUrl,fixture.usernames.worker);await worker.getByRole('button',{name:'Clock in',exact:true}).waitFor();
     await worker.getByRole('button',{name:'Clock in',exact:true}).click();await worker.getByRole('button',{name:'Clock out',exact:true}).click();await worker.getByText('Awaiting review',{exact:true}).waitFor();
     await worker.locator('[data-tab="Benefits"]').click();

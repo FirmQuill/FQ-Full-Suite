@@ -1,3 +1,4 @@
+import {receipt,acceptIfRequired} from './agreement-fixture.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -29,13 +30,14 @@ test('owner configures worker company or parent branding; isolation, fallback an
     suite=await createSuite({database,mainPort:0,workerPort:0});
     function client(base){
       let cookie='',csrf='';
-      return async(path,body,options={})=>{
+      const send=async(path,body,options={})=>{
         const response=await fetch(base+'/api/'+path,{method:body?'POST':'GET',headers:{Cookie:cookie,Origin:base,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined});
         if(options.binary)return response;
         const data=await response.json();
         if(path==='login'&&response.ok){cookie=response.headers.get('set-cookie').split(';')[0];csrf=data.csrf;}
+        if(path==='login'&&data.termsRequired)return send('terms',receipt);
         return {status:response.status,data};
-      };
+      };return send;
     }
     const main=client(suite.mainUrl), hr=client(suite.mainUrl), staff=client(suite.workerUrl), unrelated=client(suite.workerUrl);
     assert.equal((await main('login',{username:'demo-owner',password})).status,200);
@@ -65,7 +67,7 @@ test('owner configures worker company or parent branding; isolation, fallback an
       const {chromium}=createRequire(import.meta.url)(process.env.FIRMQUILL_PLAYWRIGHT||'playwright');
       browser=await chromium.launch({executablePath:executable,headless:true});
       const adminPage=await browser.newPage(), workerPage=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
-      async function browserLogin(page,url,username){await page.goto(url);const form=page.locator('#login');await form.locator('[name=username]').fill(username);await form.locator('[name=password]').fill(password);await form.getByRole('button',{name:'Sign in',exact:true}).click();}
+      async function browserLogin(page,url,username){await page.goto(url);const form=page.locator('#login');await form.locator('[name=username]').fill(username);await form.locator('[name=password]').fill(password);await form.getByRole('button',{name:'Sign in',exact:true}).click();await acceptIfRequired(page);}
       await browserLogin(adminPage,suite.mainUrl,'demo-owner');
       await adminPage.locator('nav [data-key="Employee records"]').click();
       const switcher=adminPage.locator('select').filter({has:adminPage.locator('option[value="'+child.id+'"]')}).first();

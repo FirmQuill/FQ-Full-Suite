@@ -31,6 +31,13 @@ function openStore(filename){
       initializeWorker(db);
       initializeRecords(db);
       initializeBranding(db);
+      db.exec(`CREATE TABLE IF NOT EXISTS terms_acceptances(
+        account_id TEXT NOT NULL REFERENCES accounts(id), version TEXT NOT NULL,
+        accepted_at TEXT NOT NULL, PRIMARY KEY(account_id,version));
+      CREATE TABLE IF NOT EXISTS terms_acceptance_hashes(
+        account_id TEXT NOT NULL REFERENCES accounts(id), version TEXT NOT NULL,
+        content_hash TEXT NOT NULL, accepted_at TEXT NOT NULL,
+        PRIMARY KEY(account_id,version,content_hash));`);
       initializeBenefits(db);
       initializeIdentity(db);
       initializeAccess(db);
