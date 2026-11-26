@@ -111,3 +111,31 @@ test('approval rejects stock movement after an observation even while the pallet
   const changed=apply(x.state,x.company,{type:'adjust in',item:x.item,qty:1,amount:1000,location:'Harbor A',date:'2026-01-06'});x.state.companies=changed.companies;
   assert.equal(x.view().units[0].version,original.version);assert.throws(()=>x.act(x.approver,{type:'count-review',sessionId:s.id,version:s.version,decision:'approve',reason:'Stale stock snapshot',date:'2026-01-07'}),/Stock changed since the observation/);assert.equal(x.view().sessions[0].status,'submitted');assert.deepEqual(x.view().sessions[0].observations[0].contents,[{itemId:x.item,quantity:8}]);
 });
+
+test('original observations and recount corrections survive submission and approval without posting stock twice',t=>{
+  const x=fixture(t),{unitId}=x.register();
+  const {sessionId}=x.act(x.auditor,{type:'count-start',name:'Harborline original and recount',date:'2026-01-05',unitIds:[unitId]});
+  const current=()=>x.view().sessions.find(s=>s.id===sessionId);
+  for(const [quantity,note] of [[7,'Harborline first observation'],[8,'Harborline confirmed recount']]){
+    x.act(x.auditor,{type:'count-observe',sessionId,unitId,version:current().version,location:'Harbor A',contents:[{itemId:x.item,quantity}],note});
+    assert.equal(position(x.book,x.item,'Harbor A').qty,20,'every observation is non-posting');
+  }
+  let row=current();assert.deepEqual(row.observationHistory.map(o=>o.contents[0].quantity),[7,8]);assert.equal(row.observations[0].contents[0].quantity,8);
+  assert.ok(row.observationHistory.every(o=>o.observedBy===x.auditor.id&&o.observedAt));
+  assert.ok(!JSON.stringify(x.view(x.auditor)).includes('"value":'),'history cannot expose carrying values to an auditor');
+  x.act(x.auditor,{type:'count-submit',sessionId,version:row.version});row=current();
+  const original=structuredClone(row.observationHistory);
+  x.act(x.approver,{type:'count-review',sessionId,version:row.version,decision:'approve',reason:'Harborline verified recount',date:'2026-01-06'});
+  row=current();assert.deepEqual(row.observationHistory,original);assert.equal(row.expected[0].contents[0].quantity,10);assert.equal(row.observations[0].contents[0].quantity,8);
+  assert.equal(position(x.book,x.item,'Harbor A').qty,18);assert.equal(row.corrections[0].stockSources.length,1);
+  assert.throws(()=>x.act(x.auditor,{type:'count-observe',sessionId,unitId,version:row.version,location:'Harbor A',contents:[]}),/already submitted/);
+});
+
+test('correcting an existing open count seeds history from its retained original observation',t=>{
+  const x=fixture(t),{unitId}=x.register(),{sessionId}=x.act(x.auditor,{type:'count-start',name:'Harborline existing count',date:'2026-01-05',unitIds:[unitId]});
+  let row=x.view().sessions[0];x.act(x.auditor,{type:'count-observe',sessionId,unitId,version:row.version,location:'Harbor A',contents:[{itemId:x.item,quantity:7}]});
+  const saved=x.db.prepare('SELECT body FROM asset_count_sessions WHERE id=?').get(sessionId),legacy=JSON.parse(saved.body);delete legacy.observationHistory;
+  x.db.prepare('UPDATE asset_count_sessions SET body=? WHERE id=?').run(JSON.stringify(legacy),sessionId);
+  row=x.view().sessions[0];x.act(x.auditor,{type:'count-observe',sessionId,unitId,version:row.version,location:'Harbor A',contents:[{itemId:x.item,quantity:8}]});
+  assert.deepEqual(x.view().sessions[0].observationHistory.map(o=>o.contents[0].quantity),[7,8]);assert.equal(position(x.book,x.item,'Harbor A').qty,20);
+});

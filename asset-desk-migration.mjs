@@ -30,6 +30,14 @@ export function migrateOwnerAssets(db,company,receiptKey){
       const existing=db.prepare('SELECT body FROM asset_count_sessions WHERE company=? AND id=?').get(company.id,source.id);if(existing){if(JSON.parse(existing.body).sourceEdition!=='Lite')fail('A Lite count ID collides with a Full Suite count session.');continue;}
       const sourceUnit=desk.units.find(u=>u.id===source.unit),observed=source.observed===null?null:contents(source.observed),expected={unitId:source.unit,identifier:source.unitId,version:source.version,location:source.location,status:statuses[sourceUnit.status],contents:contents(source.expected),stock:stock(source.stock)};
       const row={id:source.id,name:'Imported Lite count '+source.unitId,date:source.date,status:source.status.toLowerCase(),created:when(source.date),createdBy:owner,expected:[expected],observations:observed===null?[]:[{unitId:source.unit,location:source.location,contents:observed,stock:stock(source.stock),unknownContents:'',note:source.notes,observedAt:when(source.observedAt),observedBy:owner}],sourceEdition:'Lite',importReceipt:receiptKey,sourceOwnerRecord:structuredClone(source)};
+      const revisions=Array.isArray(source.provenance?.observationHistory)?source.provenance.observationHistory:[];
+      row.observationHistory=revisions.map(o=>({unitId:source.unit,location:o.location,contents:contents(o.contents),stock:stock(o.stock),unknownContents:o.unknownContents||'',note:o.note||'',observedAt:o.observedAt||when(source.observedAt||source.date),observedBy:owner,sourceObserverName:o.sourceObserverName||''}));
+      const latest=row.observationHistory.at(-1),latestNotes=latest?([latest.note,latest.unknownContents?'Unidentified contents: '+latest.unknownContents:''].filter(Boolean).join('; ')||'Full Suite physical observation').slice(0,500):'';
+      // A direct Full -> Lite -> Full transfer restores the observed location,
+      // unknown contents and original timestamp. If the owner edited the count
+      // in Lite, retain the old revisions and append the actual owner observation.
+      if(observed!==null&&latest&&JSON.stringify(latest.contents)===JSON.stringify(observed)&&latestNotes===source.notes)row.observations=[{...structuredClone(latest),stock:stock(source.stock)}];
+      else if(observed!==null)row.observationHistory.push(structuredClone(row.observations[0]));
       if(source.status!=='Open'){row.submitted=when(source.observedAt||source.date);row.submittedBy=owner;}
       if(source.status==='Approved'||source.status==='Rejected'){
         row.reviewed=when(source.approvedAt||source.history?.at(-1)?.date||source.date);row.reviewedBy=owner;row.reason=source.approvalNotes||source.rejectionNotes;row.adjustmentDate=source.approvedAt||null;

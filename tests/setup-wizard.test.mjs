@@ -6,6 +6,8 @@ import {join} from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {spawn,spawnSync} from 'node:child_process';
 import {request as httpRequest} from 'node:http';
+import {connect} from 'node:net';
+import {once} from 'node:events';
 import {createSetupWizard} from '../setup-wizard.mjs';
 import {openStore,readBooks,passwordMatches} from '../store.mjs';
 import {migrationCommand} from '../migration.mjs';
@@ -41,6 +43,19 @@ test('private wizard serves inert setup UI and rejects missing tokens, hostile o
  const wrongHost=await new Promise((resolve,reject)=>{const req=httpRequest(wizard.origin+'/api/preview',{method:'POST',headers:{Host:'hostile.invalid',Origin:wizard.origin,'Content-Type':'application/json','X-Setup-Token':new URL(wizard.url).hash.slice(1)}},res=>{res.resume();res.once('end',()=>resolve(res.statusCode));});req.once('error',reject);req.end('{}');});assert.equal(wrongHost,403);
  assert.equal((await post('preview',{}, {'Content-Type':'text/plain'})).status,415);
  const malformed=await fetch(wizard.origin+'/api/preview',{method:'POST',headers:{Origin:wizard.origin,'Content-Type':'application/json','X-Setup-Token':new URL(wizard.url).hash.slice(1)},body:'{'});assert.equal(malformed.status,400);assert.equal((await post('unknown',{})).status,404);await noDestination(destination);
+});
+
+test('wizard shutdown closes unused browser preconnections promptly and remains safe to repeat',async t=>{
+ const {wizard,destination}=await fixture(t),socket=connect(new URL(wizard.origin).port,'127.0.0.1');let deadline;
+ try{await once(socket,'connect');const closed=once(socket,'close');socket.resume();await Promise.race([(async()=>{await wizard.close();await closed;})(),new Promise((_,reject)=>{deadline=setTimeout(()=>{socket.destroy();reject(Error('Wizard shutdown left an unused TCP preconnection open.'));},2000);})]);await wizard.close();await noDestination(destination);}
+ finally{clearTimeout(deadline);socket.destroy();}
+});
+
+test('wizard shutdown drains an accepted initialization request and completes durable setup before returning',async t=>{
+ const {wizard,destination,post}=await fixture(t);await post('preview',{});const body=JSON.stringify(credentials);let req,deadline;
+ const response=new Promise((resolve,reject)=>{req=httpRequest(wizard.origin+'/api/initialize',{method:'POST',headers:{Origin:wizard.origin,'Content-Type':'application/json','Content-Length':Buffer.byteLength(body),'X-Setup-Token':new URL(wizard.url).hash.slice(1),Expect:'100-continue'}},res=>{let text='';res.setEncoding('utf8');res.on('data',part=>text+=part);res.once('end',()=>resolve({status:res.statusCode,data:JSON.parse(text)}));});req.once('error',reject);});
+ try{const accepted=once(req,'continue');req.flushHeaders();await accepted;const closing=wizard.close();req.end(body);const result=await Promise.race([response,new Promise((_,reject)=>{deadline=setTimeout(()=>{req.destroy();reject(Error('Accepted initialization was not drained.'));},5000);})]);assert.equal(result.status,200);assert.equal(result.data.initialized,true);await closing;const db=openStore(destination);try{assert.equal(db.prepare("SELECT username FROM accounts WHERE role='owner'").get().username,credentials.username);}finally{db.close();}}
+ finally{clearTimeout(deadline);req.destroy();}
 });
 test('empty setup requires preview and confirmation, validates credentials, retries safely and supports ordinary login',async t=>{
  const {post,destination,dir}=await fixture(t);assert.equal((await post('initialize',credentials)).status,409);assert.equal((await post('preview',{})).data.mode,'empty');

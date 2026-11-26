@@ -11,7 +11,12 @@ async function absent(path){for(const suffix of ['','-wal','-shm','-journal']){t
 export async function createSetupWizard({destination,port=0}){
   fail(typeof destination==='string'&&isAbsolute(destination),'Choose an absolute database destination.');
   await absent(destination);const secret=randomBytes(32).toString('base64url');let candidate=null,busy=false,complete=false,origin;
+  const connections=new Map(),drainWaiters=new Set();let closing=false,closePromise,pendingHandlers=0;
   const server=createServer(async(req,res)=>{
+    const connection=connections.get(req.socket);if(connection)connection.active++;
+    pendingHandlers++;let responseDone=false,handlerDone=false,released=false;
+    const release=()=>{if(released||!responseDone||!handlerDone)return;released=true;if(connection){connection.active--;if(closing&&!connection.active)req.socket.destroySoon();}};
+    const responseFinished=()=>{responseDone=true;release();};res.once('finish',responseFinished);res.once('close',responseFinished);
     res.setHeader('Cache-Control','no-store');res.setHeader('Referrer-Policy','no-referrer');res.setHeader('X-Content-Type-Options','nosniff');
     res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
     const send=(status,data)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8'});res.end(JSON.stringify(data));};
@@ -52,8 +57,21 @@ export async function createSetupWizard({destination,port=0}){
       }
       fail(false,'Setup endpoint unavailable.',404);
     }catch(e){if(!res.headersSent)send(e.status||400,{error:e.code?'Setup storage unavailable. Check the chosen data location and retry.':e.message});}
+    finally{handlerDone=true;release();if(!--pendingHandlers){for(const done of drainWaiters)done();drainWaiters.clear();}}
   });
+  server.on('connection',socket=>{connections.set(socket,{active:0});socket.once('close',()=>connections.delete(socket));});
   await new Promise((yes,no)=>server.once('error',no).listen(port,'127.0.0.1',yes));origin='http://127.0.0.1:'+server.address().port;
-  const expiry=setTimeout(()=>{candidate=null;server.close();server.closeIdleConnections();},30*60*1000);expiry.unref();
-  return {url:origin+'/#'+secret,origin,async close(){clearTimeout(expiry);candidate=null;await new Promise(done=>{server.close(done);server.closeIdleConnections();});}};
+  function closeWizard(){
+    if(closePromise)return closePromise;closing=true;clearTimeout(expiry);
+    const drained=pendingHandlers?new Promise(done=>drainWaiters.add(done)):Promise.resolve();
+    const closed=new Promise(done=>{server.close(done);server.closeIdleConnections();
+      // Browsers may preconnect without sending an HTTP request. Node's idle
+      // HTTP cleanup does not close those raw sockets. Drain active responses
+      // and initialization cleanup before closing their sockets.
+      for(const [socket,connection] of connections)if(!connection.active)socket.destroySoon();
+    });
+    closePromise=Promise.all([closed,drained]).then(()=>{candidate=null;});return closePromise;
+  }
+  const expiry=setTimeout(closeWizard,30*60*1000);expiry.unref();
+  return {url:origin+'/#'+secret,origin,close:closeWizard};
 }

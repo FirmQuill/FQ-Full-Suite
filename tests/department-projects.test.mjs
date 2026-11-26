@@ -133,3 +133,54 @@ test('contract fields and explicit lifecycle status survive edits and only activ
   assert.throws(()=>x.dep(x.owner,{type:'record-save',id:recordId,version:record.version,departmentId:'legal',kind:'contract',title:record.title,contractStatus:'Expired yesterday'}),/contract status/);
   const {recordId:closed}=x.dep(x.owner,{type:'record-save',departmentId:'legal',kind:'contract',title:'Harborline generic completed contract',status:'done'});assert.equal(get().records.find(r=>r.id===closed).contractStatus,'Closed');
 });
+
+test('Finance dashboards and exports resolve imported source chains before computing totals',t=>{
+  const x=fixture(t),{projectId}=x.act(x.owner,{type:'project-save',name:'Harborline protected imported project',departmentId:'legal',visibility:'restricted'});
+  let state=apply(x.current(),x.companyId,{type:'job expense',date:'2026-01-02',job:projectId,amount:3400,label:'Harborline protected source'});
+  const c=state.companies[0],source=c.history.at(-1).id;
+  state=apply(state,x.companyId,{type:'journal',date:'2026-01-03',label:'Harborline protected imported correction',lines:[['5100',1200],['1000',-1200]]});
+  // Imported histories may retain a parent/source link instead of a job field.
+  const correction=state.companies[0].history.at(-1);correction.source=source;
+  state=apply(state,x.companyId,{type:'attachment',date:'2026-01-03',source:correction.id,name:'Harborline protected imported file',data:'c2VjcmV0'});
+  const correctionEntry=state.companies[0].entries.at(-1);
+  state=apply(state,x.companyId,{type:'reverse journal',date:'2026-01-04',entry:correctionEntry.id,label:'Harborline protected imported reversal'});
+  assert.equal(validateState(state),true);saveBooks(x.db,state);
+  const projected=projectBusinessState(x.db,x.finance,projectErpState(x.db,x.finance,state),state).companies[0];
+  assert.deepEqual(projected.entries,[]);assert.ok(!JSON.stringify(projected).includes('Harborline protected'));
+  const dashboard=departmentView(x.db,x.finance,state).workspaces.find(w=>w.id==='finance');
+  assert.equal(dashboard.widgets.find(w=>w.id==='balances').value.cash,0);
+  const ownerDashboard=departmentView(x.db,x.owner,state).workspaces.find(w=>w.id==='finance');assert.equal(ownerDashboard.widgets.find(w=>w.id==='balances').value.cash,-3400);
+  assert.throws(()=>authorizeProjectAction(x.db,x.finance,state,x.companyId,{type:'attachment',source:correction.id}),/Project access denied/);
+});
+
+test('moving a task requires management of its original department and exposes department rights to the UI',t=>{
+  const x=fixture(t),{projectId}=x.act(x.owner,{type:'project-save',name:'Harborline shared coordination',departmentId:'legal',visibility:'company'});
+  const {taskId}=x.act(x.owner,{type:'project-task-save',projectId,departmentId:'legal',title:'Harborline legal work'});
+  x.dep(x.owner,{type:'department-grant',departmentId:'legal',accountId:x.legal.id,rights:['view']});
+  x.dep(x.owner,{type:'department-grant',departmentId:'hr',accountId:x.legal.id,rights:['view','manage']});
+  const view=projectView(x.db,x.legal,x.current()),task=view.projects.find(p=>p.id===projectId).tasks.find(t=>t.id===taskId);
+  assert.deepEqual(view.departments.find(d=>d.id==='legal').rights,['view']);
+  assert.throws(()=>x.act(x.legal,{type:'project-task-save',projectId,id:task.id,version:task.version,departmentId:'hr',title:task.title}),/Original task department management/);
+  assert.equal(projectView(x.db,x.owner,x.current()).projects.find(p=>p.id===projectId).tasks.find(t=>t.id===taskId).departmentId,'legal');
+  const {taskId:restrictedId}=x.act(x.owner,{type:'project-task-save',projectId,departmentId:'legal',title:'Harborline restricted legal work',restricted:true,readers:[x.legal.id]});
+  x.dep(x.owner,{type:'department-grant',departmentId:'legal',accountId:x.legal.id,rights:['view','manage']});x.dep(x.owner,{type:'department-grant',departmentId:'hr',accountId:x.legal.id,rights:['view','manage','restricted']});
+  const restricted=projectView(x.db,x.legal,x.current()).projects.find(p=>p.id===projectId).tasks.find(t=>t.id===restrictedId);
+  assert.throws(()=>x.act(x.legal,{type:'project-task-save',projectId,id:restricted.id,version:restricted.version,departmentId:'hr',title:restricted.title,restricted:true,readers:restricted.readers}),/Original restricted task management/);
+});
+
+test('only owner reader choices include worker accounts, without making workers eligible leads or task owners',t=>{
+  const x=fixture(t),view=projectView(x.db,x.owner,x.current(),{companyId:x.companyId});
+  assert.ok(view.readerAccounts.some(a=>a.id===x.worker.id));assert.ok(!view.accounts.some(a=>a.id===x.worker.id));
+  assert.deepEqual(projectView(x.db,x.legal,x.current(),{companyId:x.companyId}).readerAccounts,[]);
+  assert.throws(()=>x.act(x.owner,{type:'project-save',name:'Harborline invalid lead',departmentId:'legal',visibility:'restricted',leadId:x.worker.id}),/active authorized/);
+});
+
+test('authorized leads can update restricted projects while only owner can change access',t=>{
+  const x=fixture(t),{projectId}=x.act(x.owner,{type:'project-save',name:'Harborline restricted coordination',departmentId:'legal',visibility:'restricted',readers:[x.legal.id],leadId:x.legal.id});
+  let p=projectView(x.db,x.legal,x.current()).projects.find(p=>p.id===projectId);
+  const payload={type:'project-save',id:projectId,version:p.version,name:'Harborline renamed coordination',departmentId:p.departmentId,visibility:p.visibility,readers:p.readers,leadId:p.leadId,status:'in-progress'};
+  x.act(x.legal,payload);p=projectView(x.db,x.legal,x.current()).projects.find(p=>p.id===projectId);assert.equal(p.name,payload.name);assert.equal(p.status,'in-progress');assert.deepEqual(p.readers,[x.legal.id]);
+  assert.throws(()=>x.act(x.legal,{...payload,version:p.version,readers:[]}),/Only the owner can change project access/);
+  assert.throws(()=>x.act(x.legal,{...payload,version:p.version,visibility:'company'}),/Only the owner can change project access/);
+  assert.throws(()=>x.act(x.legal,{type:'project-save',name:'Harborline unauthorized restricted project',departmentId:'legal',visibility:'restricted'}),/Only the owner can change project access/);
+});

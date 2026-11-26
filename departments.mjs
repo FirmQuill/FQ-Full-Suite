@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {accountAreas} from './access.mjs';
 import {balance,outstanding} from './shared/core.mjs';
+import {projectRecordScope} from './project-record-scope.mjs';
 
 export const DEPARTMENT_RIGHTS=['view','manage','assign','restricted','finance','hr'];
 export const DEPARTMENT_WIDGETS=['projects','tasks','contracts','renewals','invoices','balances','close-tasks','onboarding','termination','benefits-work','cases','records'];
@@ -122,9 +123,9 @@ export function departmentView(db,user,state,query={}){
           if(!rights.includes('finance'))continue;
           // Financial records linked to hidden projects are excluded before totals.
           const hidden=new Set(c.jobs.filter(j=>{const p=projectTable?parsed(db.prepare('SELECT * FROM project_workspaces WHERE company=? AND id=?').get(c.id,j.id)):null;return p&&p.visibility!=='company'&&!visibleProject(db,user,c.id,p);}).map(j=>j.id));
-          const sources=new Set([...c.docs,...c.history,...c.time].filter(r=>hidden.has(r.job)).map(r=>r.id));
-          if(id==='invoices'&&has('Sales','Reports'))widgets.push({id,rows:c.docs.filter(d=>d.kind==='invoice'&&!hidden.has(d.job)&&!sources.has(d.id)).map(d=>({id:d.id,date:d.date,label:d.label,total:d.total,outstanding:outstanding(c,d)}))});
-          if(id==='balances'&&has('Accounting','Banking','Reports')){const book={...c,entries:c.entries.filter(e=>!sources.has(e.source))};widgets.push({id,value:{cash:balance(book,'1000'),receivable:balance(book,'1100'),payable:-balance(book,'2000'),scope:hidden.size?'permitted-records':'company'}});}
+          const {denied}=projectRecordScope(c,hidden),book={...c,docs:c.docs.filter(d=>!denied.has(d.id)),entries:c.entries.filter(e=>!denied.has(e.id))};
+          if(id==='invoices'&&has('Sales','Reports'))widgets.push({id,rows:book.docs.filter(d=>d.kind==='invoice').map(d=>({id:d.id,date:d.date,label:d.label,total:d.total,outstanding:outstanding(book,d)}))});
+          if(id==='balances'&&has('Accounting','Banking','Reports'))widgets.push({id,value:{cash:balance(book,'1000'),receivable:balance(book,'1100'),payable:-balance(book,'2000'),scope:hidden.size?'permitted-records':'company'}});
           continue;
         }
         const kinds={contracts:'contract',renewals:'contract','close-tasks':'close-task',onboarding:'onboarding',termination:'termination','benefits-work':'benefits-work',cases:'case'};

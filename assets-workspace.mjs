@@ -79,7 +79,7 @@ export function assetsView(db,user,state,{companyId,auditOnly=false}={}){
   // Stock snapshots are integrity controls, not information needed to count a
   // pallet. Cost values remain unavailable to observation-only audit accounts.
   for(const row of [...rows,...sessions])if(!owner)delete row.sourceOwnerRecord;
-  if(!rights.includes('approve'))for(const row of sessions)for(const snapshot of [...row.expected,...row.observations])if(snapshot.stock)snapshot.stock=snapshot.stock.map(({value,...quantity})=>quantity);
+  if(!rights.includes('approve'))for(const row of sessions)for(const snapshot of [...row.expected,...row.observations,...(row.observationHistory||[])])if(snapshot.stock)snapshot.stock=snapshot.stock.map(({value,...quantity})=>quantity);
   return {companies:available.map(({id,name})=>({id,name})),companyId:selected,rights,units:rows,sessions,
     movements:db.prepare('SELECT body FROM asset_movements WHERE company=? ORDER BY rowid DESC').all(selected).map(r=>JSON.parse(r.body)),
     items:book.items.filter(i=>i.kind==='Product').map(({id,name})=>({id,name})),fixedAssets:book.assets.map(({id,name})=>({id,name})),
@@ -139,7 +139,7 @@ export function assetsCommand(db,user,state,action){
     }else if(action.type==='count-start'){
       requireRight(db,user,company,'audit');check(Array.isArray(action.unitIds)&&action.unitIds.length&&action.unitIds.length<=200&&new Set(action.unitIds).size===action.unitIds.length,'Choose 1–200 different tracked assets.');
       const when=date(action.date),expected=action.unitIds.map(id=>{const row=unit(db,company,id);check(when>=row.lastDate,'Count date precedes asset movement history.',409);return {unitId:row.id,identifier:row.identifier,version:row.version,location:row.location,status:row.status,contents:structuredClone(row.contents),stock:stockSnapshot(book,row.location,row.contents)};});
-      const row={id:randomUUID(),name:text(action.name),date:when,status:'open',created:now(),createdBy:user.id,expected,observations:[],version:1};saveSession(db,company,row);result={sessionId:row.id};
+      const row={id:randomUUID(),name:text(action.name),date:when,status:'open',created:now(),createdBy:user.id,expected,observations:[],observationHistory:[],version:1};saveSession(db,company,row);result={sessionId:row.id};
     }else if(action.type==='count-observe'){
       requireRight(db,user,company,'audit');const row=session(db,company,action.sessionId);version(row,action.version);
       check(row.status==='open','This count was already submitted.',409);
@@ -147,7 +147,7 @@ export function assetsCommand(db,user,state,action){
       check(row.expected.some(e=>e.unitId===action.unitId),'This asset is outside the count session.');
       const clean=contents(book,action.contents||[]),expected=row.expected.find(e=>e.unitId===action.unitId);
       const observed={unitId:action.unitId,location:text(action.location),contents:clean,stock:stockSnapshot(book,expected.location,[...expected.contents,...clean]),unknownContents:text(action.unknownContents||'',1000,true),note:text(action.note||'',1000,true),observedAt:now(),observedBy:user.id};
-      const observations=[...row.observations.filter(o=>o.unitId!==action.unitId),observed];saveSession(db,company,{...row,observations,version:row.version+1});result={sessionId:row.id};
+      const observations=[...row.observations.filter(o=>o.unitId!==action.unitId),observed],observationHistory=[...(row.observationHistory||row.observations),structuredClone(observed)];saveSession(db,company,{...row,observations,observationHistory,version:row.version+1});result={sessionId:row.id};
     }else if(action.type==='count-submit'){
       requireRight(db,user,company,'audit');const row=session(db,company,action.sessionId);version(row,action.version);
       check(row.status==='open','This count was already submitted.',409);check(row.createdBy===user.id||account.role==='owner','Only the count creator can submit it.',403);

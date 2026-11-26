@@ -1,5 +1,5 @@
 import {workspaceContent,workspaceAction,bindWorkspaceSearch} from './department-workspace.mjs';
-import {renderAssets,assetsAction} from './assets-workspace.mjs';
+import {renderAssets,assetsAction,bindAssetsLookup} from './assets-workspace.mjs';
 const auditPortal=location.pathname==='/audit';
 import {openAccount} from '/legal/account.mjs';
 import {recommended,modules,accounts,manualAccounts,outstanding,sum,cents,dollars,check,statements} from '/shared/core.mjs';
@@ -131,6 +131,7 @@ function render(){
   if(page==='Reports'&&c)app.querySelector('[name=group]').value=filter.group;
   roleFilter(app);
   bindWorkspaceSearch(app,api,companyId);
+  bindAssetsLookup(app,auxiliary);
 }
 async function save(type,a){
   check(session,'Sign in first.');

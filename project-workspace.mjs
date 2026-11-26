@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {apply,jobSummary,sum} from './shared/core.mjs';
 import {accountAreas} from './access.mjs';
+import {projectRecordScope} from './project-record-scope.mjs';
 import {companyAccess,departmentCompany,ensureDepartments,departmentFor,departmentPermissions,visibleProject,visibleWorkspaceRecord,validateReaders,validateWorkspaceAccount,workspaceAccounts} from './departments.mjs';
 
 const check=(ok,message,status=400)=>{if(!ok)throw Object.assign(Error(message),{status});};
@@ -28,7 +29,7 @@ export function projectCommand(db,user,state,a){
     const departmentId=a.departmentId||'',dept=departmentId?departmentFor(db,c.id,departmentId):null;check(!departmentId||dept,'Department unavailable.',404);const rights=departmentPermissions(db,user,c.id,departmentId);
     check(user.role==='owner'||rights.includes('manage')||!departmentId&&['manager','bookkeeper'].includes(user.role),'Department project management permission required.',403);
     const visibility=a.visibility||'department';check(['company','department','restricted'].includes(visibility),'Choose project visibility.');check(visibility==='company'||departmentId,'Protected projects need a department.');
-    const readers=validateReaders(db,c.id,a.readers||[]);check(user.role==='owner'||(!old||old.departmentId===departmentId)&&(!old||old.visibility===visibility)&&JSON.stringify(readers)===JSON.stringify(old?.readers||[])&&visibility!=='restricted','Only the owner can change project access.',403);
+    const readers=validateReaders(db,c.id,a.readers||[]);check(user.role==='owner'||(!old||old.departmentId===departmentId)&&(!old||old.visibility===visibility)&&JSON.stringify(readers)===JSON.stringify(old?.readers||[])&&(visibility!=='restricted'||old?.visibility==='restricted'),'Only the owner can change project access.',403);
     const name=text(a.name),leadId=validateWorkspaceAccount(db,c.id,a.leadId||'');check(leadId===(old?.leadId||'')||user.role==='owner'||rights.includes('assign'),'Assignment permission required.',403);
     let next=structuredClone(state),id=job?.id;if(!id){next=apply(next,c.id,{type:'job',name,date:day(a.date||now().slice(0,10)),label:name});id=next.companies.find(x=>x.id===c.id).jobs.at(-1).id;}else next.companies.find(x=>x.id===c.id).jobs.find(j=>j.id===id).name=name;
     const body={...provenance(old),departmentId,leadId,visibility,readers,status:a.status||'open',created:old?.created||now(),updated:now()};check(['open','in-progress','done'].includes(body.status),'Choose project status.');
@@ -38,6 +39,7 @@ export function projectCommand(db,user,state,a){
   if(a.type==='project-task-save'){
     const old=a.id?parsed(db.prepare('SELECT * FROM project_tasks WHERE id=? AND company=? AND project=?').get(a.id,c.id,job.id)):null;check(!a.id||old&&visibleWorkspaceRecord(db,user,c.id,old),'Task unavailable.',404);if(old)check(a.version===old.version,'Task changed. Refresh before saving.',409);
     const departmentId=a.departmentId||project.departmentId,dept=departmentFor(db,c.id,departmentId);check(dept,'Choose a task department.');const rights=departmentPermissions(db,user,c.id,departmentId);check(user.role==='owner'||rights.includes('manage'),'Task department management permission required.',403);
+    if(old){const priorRights=departmentPermissions(db,user,c.id,old.departmentId);check(user.role==='owner'||priorRights.includes('manage'),'Original task department management permission required.',403);check(user.role==='owner'||!old.restricted||priorRights.includes('restricted'),'Original restricted task management permission required.',403);}
     const kind=a.kind||'task';check(['task','onboarding','termination'].includes(kind),'Choose a task kind.');const restricted=!!a.restricted;check(!(restricted||old?.restricted)||rights.includes('restricted'),'Restricted task permission required.',403);if(kind!=='task')check(rights.includes('hr')&&(user.role==='owner'||accountAreas(db,user).some(a=>['Employee records','Benefits administration'].includes(a))),'HR permission and employee ERP area required.',403);
     const ownerId=validateWorkspaceAccount(db,c.id,a.ownerId||'',{hrOnly:kind!=='task'});check(ownerId===(old?.ownerId||'')||rights.includes('assign'),'Assignment permission required.',403);const readers=validateReaders(db,c.id,a.readers||[]);check(user.role==='owner'||JSON.stringify(readers)===JSON.stringify(old?.readers||[]),'Only the owner can grant explicit task access.',403);
     const id=old?.id||randomUUID(),body={...provenance(old),projectId:job.id,departmentId,title:text(a.title),kind,ownerId,dueDate:day(a.dueDate||'',true),status:a.status||'open',restricted,readers,notes:text(a.notes||'',4000,true),created:old?.created||now(),updated:now()};check(['open','in-progress','done'].includes(body.status),'Choose task status.');
@@ -62,21 +64,15 @@ export function projectView(db,user,state,query={}){
     const staffing=db.prepare('SELECT * FROM project_staffing WHERE company=? AND project=?').all(c.id,job.id).map(parsed).map(s=>({...s,employeeName:c.employees.find(e=>e.id===s.employeeId)?.name||'Worker'}));
     projects.push({...p,name:job.name,companyId:c.id,companyName:c.name,rights,tasks,staffing,timeMinutes:sum(c.time.filter(t=>t.job===job.id).map(t=>t.minutes)),...(finance?{cost:jobSummary(c,job.id)}:{})});
   }
-  const companyId=query.companyId||companies[0]?.id,departments=companyId?db.prepare('SELECT * FROM departments WHERE company=?').all(companyId).map(parsed).filter(d=>departmentPermissions(db,user,companyId,d.id).includes('view')):[],available=user.role==='owner'||projects.length||departments.length;
-  return {projects,accounts:companyId&&available?workspaceAccounts(db,user,state,companyId):[],employees:companyId&&available?companies.find(c=>c.id===companyId)?.employees.map(({id,name})=>({id,name}))||[]:[],departments};
+  const companyId=query.companyId||companies[0]?.id,departments=companyId?db.prepare('SELECT * FROM departments WHERE company=?').all(companyId).map(parsed).map(d=>({...d,rights:departmentPermissions(db,user,companyId,d.id)})).filter(d=>d.rights.includes('view')):[],available=user.role==='owner'||projects.length||departments.length;
+  const readerAccounts=user.role==='owner'&&companyId&&companies.some(c=>c.id===companyId)?db.prepare('SELECT id,name,role,assignments FROM accounts WHERE active=1').all().filter(a=>a.role==='owner'||JSON.parse(a.assignments).includes(companyId)).map(({id,name,role})=>({id,name,role})):[];
+  return {projects,accounts:companyId&&available?workspaceAccounts(db,user,state,companyId):[],readerAccounts,employees:companyId&&available?companies.find(c=>c.id===companyId)?.employees.map(({id,name})=>({id,name}))||[]:[],departments};
 }
 function hiddenProjectRecords(db,user,company){
   // Legacy and company-visible journals retain their pre-upgrade financial
   // area permissions even when the account cannot open the job selector.
-  const hidden=new Set(company.jobs.filter(j=>{const project=metadata(db,company.id,j.id);return project&&project.visibility!=='company'&&!visibleProject(db,user,company.id,project);}).map(j=>j.id)),denied=new Set(hidden);
-  const records=[...company.history,...company.docs,...company.time,...company.entries,...company.moves,...company.bank,...company.attachments];let changed=true;
-  while(changed){changed=false;for(const r of records){
-    if(!denied.has(r.id)&&[r.job,r.jobId,r.projectId,r.source,r.parent,r.approval,r.match].some(id=>id&&denied.has(id))){denied.add(r.id);changed=true;}
-    // An approval belongs to its time entry; its own historical event does not
-    // carry a job ID, so follow this ownership edge in the other direction.
-    if(denied.has(r.id)&&r.approval&&!denied.has(r.approval)){denied.add(r.approval);changed=true;}
-  }}
-  return {hidden,denied};
+  const hidden=new Set(company.jobs.filter(j=>{const project=metadata(db,company.id,j.id);return project&&project.visibility!=='company'&&!visibleProject(db,user,company.id,project);}).map(j=>j.id));
+  return projectRecordScope(company,hidden);
 }
 // Apply this to every general session/report/export projection. Filter by the
 // authoritative full books first or pass fullState when an area projection has
