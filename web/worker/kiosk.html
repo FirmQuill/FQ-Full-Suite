@@ -1,0 +1,15 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FirmQuill time clock kiosk</title><link rel="stylesheet" href="/kiosk.css"><script type="module" src="/kiosk.mjs"></script></head>
+<body><main><h1>Staff time clock</h1><p id="station"></p>
+<div id="result" role="status" aria-live="polite">Checking this station…</div>
+<form id="pair" hidden autocomplete="off">
+<h2>Pair a shared computer</h2><p>Ask the company owner for a one-time pairing code. This is for station setup only.</p>
+<label for="pair-code">Pairing code</label><input id="pair-code" name="code" type="password" maxlength="43" required spellcheck="false" autocapitalize="none">
+<button type="submit">Pair station</button></form>
+<form id="punch" hidden autocomplete="off">
+<label for="worker-id">Worker ID</label><input id="worker-id" name="workerId" maxlength="120" required spellcheck="false" autocapitalize="none">
+<label for="pin">Station PIN</label><input id="pin" name="pin" type="password" autocomplete="off" inputmode="numeric" maxlength="10" pattern="[0-9]{10}" required>
+<div class="buttons"><button type="button" data-action="clock-in">Clock in</button><button type="button" data-action="clock-out">Clock out</button></div>
+<p>Use only your own worker ID and station PIN. For shift details or corrections, sign in to your regular employee portal separately.</p></form>
+</main></body></html>

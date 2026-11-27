@@ -1,3 +1,4 @@
+import {initializeTimeKiosk,createTimeKiosk} from './time-kiosk.mjs';
 import {createPasskeys,initializePasskeys,passkeyOrigin} from './passkeys.mjs';
 import {createModuleActivation} from './module-activation.mjs';
 import {csvReceiptList,previewCsvUndo,executeCsvUndo} from './csv-recovery.mjs';
@@ -41,8 +42,8 @@ const token=()=>randomBytes(32).toString('base64url');
 const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
 const common=new Set(['passkeys-ui.mjs','passkey-browser.mjs','report-packet.mjs','report-packet-ui.mjs','app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs','contextual-help-ui.mjs','contextual-help.css']);
-const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','month-end-close.mjs','backup-admin.mjs','company-knowledge.mjs','private-ftps-ui.mjs','csv-recovery-ui.mjs','activation-ui.mjs','audit.html']);
-const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
+const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','month-end-close.mjs','backup-admin.mjs','company-knowledge.mjs','private-ftps-ui.mjs','csv-recovery-ui.mjs','activation-ui.mjs','time-kiosk-ui.mjs','audit.html']);
+const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs','kiosk.html','kiosk.mjs','kiosk.css']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
 async function jsonBody(req,max){
@@ -77,6 +78,8 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
   const identity=createIdentityService({db,database,readBooks,saveBooks,passwordHash,putUser,...identityOptions});
   const dummyHash=await passwordHash(token()),servers=[];
   const passwordWork=createPasswordWorkGate();
+  initializeTimeKiosk(db);
+  const kiosk=createTimeKiosk({db,accepted:hasAccepted,pinWork:passwordWork.immediate});
   let planningTimer,backupTimer;
   const refreshRecurring=()=>tx(db,()=>{const next=catchUpPlanning(readBooks(db).state,planningClock());if(next.generated)saveBooks(db,next.state);});
   const runRecurring=()=>{try{refreshRecurring();}catch{process.emitWarning('FirmQuill could not refresh recurring drafts. Review the workspace and retry.');}};
@@ -145,7 +148,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         const url=new URL(req.url,origin),path=url.pathname;
         if(!path.startsWith('/api/')){
           requireThat(req.method==='GET'||req.method==='HEAD',405,'Method unavailable.');
-          let name=path==='/'?'index.html':path==='/audit'&&portal==='main'?'audit.html':path.slice(1),root='web/'+portal+'/';
+          let name=path==='/'?'index.html':path==='/audit'&&portal==='main'?'audit.html':path==='/kiosk'&&portal==='worker'?'kiosk.html':path.slice(1),root='web/'+portal+'/';
           if(path.startsWith('/legal/')){
             name=path.slice(7);requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');root='web/legal/';
           }else if(path.startsWith('/shared/')){
@@ -171,6 +174,26 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         const post=req.method==='POST';requireThat(post||req.method==='GET',405,'Method unavailable.');
         if(post)requireThat(req.headers.origin===origin,403,'Origin does not match this portal.');
         const cookies=(req.headers.cookie||'').split(';').map(x=>x.trim()),sid=cookies.find(x=>x.startsWith(cookieName+'='))?.slice(cookieName.length+1),s=sessions.get(sid);
+        if(path.startsWith('/api/time-kiosk/')){
+          requireThat(portal==='worker',404,'Endpoint unavailable.');
+          const permittedHost=new URL(origin).host===req.headers.host;
+          requireThat(permittedHost&&(secure||!publicOrigin),403,'Use the station’s configured HTTPS address or open it on the host.');
+          const kioskCookie=(secure?'__Host-':'')+'fq_time_kiosk';
+          const device=cookies.find(x=>x.startsWith(kioskCookie+'='))?.slice(kioskCookie.length+1);
+          if(path==='/api/time-kiosk/status'&&!post){send(res,200,kiosk.status(device));return;}
+          if(path==='/api/time-kiosk/pair'&&post){
+            const p=await jsonBody(req,1024);requireThat(!res.destroyed,499,'Request ended.');
+            requireThat(!kiosk.status(device).paired,409,'This browser already has a paired station.');
+            const result=kiosk.pair(p,req.socket.remoteAddress);
+            res.setHeader('Set-Cookie',kioskCookie+'='+result.value+'; HttpOnly; SameSite=Strict; Path=/; Max-Age='+result.maxAge+(secure?'; Secure':''));
+            send(res,200,{paired:true,label:result.label});return;
+          }
+          if(path==='/api/time-kiosk/punch'&&post){
+            const p=await jsonBody(req,1024);requireThat(!res.destroyed,499,'Request ended.');
+            send(res,200,await kiosk.punch(device,p,dummyHash));return;
+          }
+          requireThat(false,404,'Endpoint unavailable.');
+        }
         if(path==='/api/identity/providers'&&!post){send(res,200,{providers:identity.providers(portal)});return;}
         if(path==='/api/identity/invite/accept'&&post){
           const p=await jsonBody(req,4096);await limited(()=>identity.acceptInvite(p.token,p.password));send(res,200,{ok:true});return;
@@ -244,6 +267,14 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           send(res,200,snapshot(account,s));return;
         }
         requireThat(hasAccepted(u),428,'Read and agree to the Terms of Service first.');
+        if(path==='/api/time-kiosk-admin'){
+          requireThat(portal==='main',404,'Endpoint unavailable.');owner(u);
+          if(!post){send(res,200,kiosk.view(u,url.searchParams.get('companyId')));return;}
+          const p=await jsonBody(req,2048);
+          const live=()=>{requireThat(sessions.get(sid)===s&&!res.destroyed,401,'Sign in again.');const current=userFor(s,portal);requireThat(hasAccepted(current),428,'Read and agree to the Terms of Service first.');return current;};
+          send(res,200,await kiosk.admin(p,live));return;
+        }
+
         if(path.startsWith('/api/passkeys/')){
           requireThat(pkOrigin,403,'Passkeys are unavailable on this origin.');
           const live=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return db.prepare('SELECT * FROM accounts WHERE id=?').get(active.id);};
@@ -268,6 +299,17 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           }
           tx(db,()=>audit(db,u,'',path.endsWith('/revoke')?'passkey revoked':'passkey registered',portal+' portal'));
           send(res,200,result);return;
+        }
+        if(path==='/api/paid-upgrade-preview'){
+          requireThat(portal==='main'&&post,404,'Endpoint unavailable.');
+          owner(u);
+          const input=await jsonBody(req,32*1024);
+          const active=userFor(s,portal);
+          requireThat(sessions.get(sid)===s,401,'Sign in again.');
+          owner(active);
+          requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
+          requireThat(input&&Object.keys(input).length===1&&Object.hasOwn(input,'code'),400,'Select an issuer-signed license file.');
+          send(res,200,activation.preview(input.code));return;
         }
         if(path==='/api/module-activation'){
           requireThat(portal==='main',404,'Endpoint unavailable.');

@@ -74,6 +74,32 @@ backups retain the public credentials recorded by FirmQuill, not device private
 keys. After restoring an older backup, review enrolled passkeys in case it
 predates a revocation.
 
+### Shared staff time clock
+
+Open **Time clock kiosk** in the owner portal, select the company, and **Create
+station** for a single existing job. Open the employee portal's `/kiosk` page
+on the shared computer (for example `http://127.0.0.1:4180/kiosk` on the
+FirmQuill host). Use a dedicated browser profile with no signed-in accounts or
+saved passwords. A separate computer needs the organization's configured HTTPS
+employee portal. The one-time pairing code lasts 15 minutes and the resulting
+browser pairing lasts 30 days. **Replace pairing** disconnects the old browser
+immediately without changing its workers' PINs.
+
+An active worker with the **Time** feature must first accept the current Terms
+in their usual worker portal. The owner issues that worker a station-specific
+10-digit PIN and shares it privately along with their worker ID. The kiosk
+lets the worker clock in or out for the station job only; it does not open any
+employee records. A punch made on another job uses the original station or the
+ordinary portal. Punches use the host clock and the usual timesheet review.
+The station job is a routing boundary, not a GPS or site-verification feature.
+Badge/RFID readers are not part of this version.
+
+Revoke a lost station or remove an individual worker's kiosk access in the
+owner portal. Neither operation edits past punches or closes an open shift.
+A restored older database may restore then-active station credentials; before
+putting a restored host back on the network, replace each retained station
+pairing or revoke it, and reissue PINs if their history is uncertain.
+
 ### Worker portal branding
 
 In **Worker portal branding**, choose a PNG or JPEG and review the fitted

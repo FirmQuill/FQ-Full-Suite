@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {constants,createCipheriv,generateKeyPairSync,publicEncrypt,randomBytes} from 'node:crypto';
 import {createRequire} from 'node:module';
 import {mkdtemp,mkdir,rm,chmod,writeFile,readFile} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -40,9 +41,21 @@ test('offline verification: invalid bits, wrong signer/install/edition/module, t
  await writeFile(join(fx.options.directory,'active-entitlement.fqlicense'),'bad');
  assert.equal((await createModuleActivation(fx.options)).status().status,'invalid saved activation');
 });
-async function setup(t){
+function encryptForTest(signed,key){
+ const h=Buffer.from(JSON.stringify({alg:'RSA-OAEP-256',enc:'A256GCM',typ:'application/fq-upgrade-v1'})).toString('base64url');
+ const cek=randomBytes(32),nonce=randomBytes(12);
+ const wrap=publicEncrypt({key,padding:constants.RSA_PKCS1_OAEP_PADDING,oaepHash:'sha256'},cek);
+ const aes=createCipheriv('aes-256-gcm',cek,nonce);aes.setAAD(Buffer.from(h));
+ return [h,wrap,nonce,Buffer.concat([aes.update(signed,'utf8'),aes.final()]),aes.getAuthTag()].map(part=>typeof part==='string'?part:part.toString('base64url')).join('.');
+}
+async function setup(t,{encrypted=false}={}){
  const root=await folder(t),database=join(root,'fictional.sqlite');let now=day;
  const fx=await activationFixture(root,{clock:()=>now});
+ let recipient;
+ if(encrypted){
+   recipient=generateKeyPairSync('rsa',{modulusLength:3072});
+   await writeFile(join(fx.options.directory,'upgrade-recipient.pem'),recipient.privateKey.export({type:'pkcs8',format:'pem'}),{mode:0o600});
+ }
  const state=sampleVault(),company=state.companies[0],other=state.companies[1],employee=company.employees[0];
  const legacy=join(root,'fictional-legacy'),contextual=join(root,'fictional-context');
  await mkdir(legacy);await mkdir(contextual);
@@ -59,7 +72,7 @@ async function setup(t){
  });}finally{db.close();}
  const launch=()=>createSuite({database,mainPort:0,workerPort:0,supportOptions:{documentationRoot:legacy,contextualRoot:contextual},activationOptions:fx.options});
  let suite=await launch();t.after(()=>suite.close());
- return {fx,company,employee,state,database,advance:n=>{now+=n;},get suite(){return suite;},async restart(){await suite.close();suite=await launch();}};
+ return {fx,encrypt:(code,key=recipient?.publicKey)=>encryptForTest(code,key),company,employee,state,database,advance:n=>{now+=n;},get suite(){return suite;},async restart(){await suite.close();suite=await launch();}};
 }
 async function request(origin,route,{session,body}={}){
  const res=await fetch(origin+'/api/'+route,{method:body?'POST':'GET',headers:{...(session?{cookie:session.cookie}:{}),...(body?{origin,'content-type':'application/json','x-csrf-token':session?.csrf||''}:{})},...(body?{body:JSON.stringify(body)}:{})});
@@ -174,4 +187,83 @@ test('actual owner UI retains Manual Payroll before and after signed paid-suppor
  await b('Sign out').click();assert.equal(await page.locator('#module-renewal').count(),0);
 
  assert.deepEqual(errs,[]);assert.deepEqual(remote,[]);
+});
+
+test('paid preflight is signed, owner/terms/CSRF scoped, and cannot mutate active entitlements',async t=>{
+ const x=await setup(t,{encrypted:true}),{mainUrl,workerUrl}=x.suite,route='paid-upgrade-preview';
+ const owner=await login(mainUrl,'owner',false),manager=await login(mainUrl,'manager'),worker=await login(workerUrl,'worker');
+ const updateFeed={origin:'https://updates.example.com',channel:'stable'},feedTerms={updateFeed,licenseId:'a'.repeat(32),issuedAt:second-3600,expiresAt:second+60};
+ const code=x.fx.mint({modules:['software_updates','expanded_agent','private-support','manual-payroll'],...feedTerms});
+ const body={code};
+ const raw=value=>request(mainUrl,route,{session:owner,body:value});
+ const preview=(value=body)=>raw({...value,code:x.encrypt(value.code)});
+ assert.equal((await preview()).status,428);
+ await request(mainUrl,'terms',{session:owner,body:fixtureAgreement});
+ assert.equal((await request(mainUrl,route,{session:manager,body})).status,403);
+ assert.equal((await request(mainUrl,route,{session:{...owner,csrf:'wrong'},body})).status,403);
+ assert.equal((await request(workerUrl,route,{session:worker,body})).status,404);
+ assert.equal((await request(mainUrl,route,{session:owner})).status,404);
+ assert.deepEqual((await preview()).result,{edition,installationId:x.fx.id,status:'active',expiresAt:second+60,notBefore:null,
+  entitlements:[{id:'software_updates',requiresPaidBuild:true},{id:'expanded_agent',requiresPaidBuild:true},{id:'private-support',requiresPaidBuild:false}],updateFeed});
+ assert.equal((await preview({...body,code:x.fx.mint({installationId:'a'.repeat(64)})})).status,400);
+ assert.equal((await preview({...body,code:x.fx.mint({modules:['future-unknown']})})).status,400);
+ assert.equal((await preview({...body,code:x.fx.mint({expiresAt:second})})).result.status,'expired');
+ assert.equal((await preview({...body,code:x.fx.mint({notBefore:second+1})})).result.status,'not yet valid');
+ assert.equal((await preview({...body,code:code+'a'})).status,400);
+ assert.equal((await raw(body)).status,400,'legacy plaintext is not an upgrade upload');
+ const envelope=x.encrypt(code);
+ assert.notEqual(envelope,x.encrypt(code),'fresh key and nonce for each encrypted file');
+ assert.ok(!envelope.includes(updateFeed.origin)&&!envelope.includes(x.fx.id));
+ const parts=envelope.split('.'),tag=Buffer.from(parts[4],'base64url');tag[0]^=1;parts[4]=tag.toString('base64url');
+ assert.equal((await raw({code:parts.join('.')})).status,400);
+ const otherRecipient=generateKeyPairSync('rsa',{modulusLength:3072});
+ assert.equal((await raw({code:x.encrypt(code,otherRecipient.publicKey)})).status,400);
+ const otherIssuer=await activationFixture(await folder(t));
+ assert.equal((await preview({code:otherIssuer.mint({...feedTerms,installationId:x.fx.id,modules:['software_updates']})})).status,400);
+
+ for(const origin of ['http://updates.example.com','https://updates.example.com/../folder','https://updates.example.com/','https://updates.example.com/%2e%2e/','https://test@updates.example.com','https://updates.example.com:443','https://updates.example.com?token=secret','https://updates.example.com/#x','//updates.example.com','https://[::1]','https://127.0.0.1','https://service.lan','https://updates.example.com\\folder','https://updates.example.com\n']){
+   assert.equal((await preview({code:x.fx.mint({...feedTerms,modules:['software_updates'],updateFeed:{...updateFeed,origin}})})).status,400,JSON.stringify(origin));
+ }
+ for(const missing of [{expiresAt:undefined},{licenseId:undefined},{issuedAt:undefined},{modules:['private-support']},{updateFeed:{...updateFeed,channel:'admin'}},{updateFeed:{...updateFeed,password:'secret'}}]){
+   assert.equal((await preview({code:x.fx.mint({...feedTerms,modules:['software_updates'],...missing})})).status,400);
+ }
+ assert.equal((await preview({...body,feedUrl:updateFeed.origin})).status,400);
+ const result=await preview();assert.equal(result.status,200);
+ assert.ok(!JSON.stringify(result).includes(code)&&!JSON.stringify(result).includes(feedTerms.licenseId));
+ assert.equal((await request(mainUrl,'module-activation',{session:owner,body:{code}})).status,400);
+ const active=x.fx.mint({modules:['private-support'],expiresAt:second+600});
+ await request(mainUrl,'module-activation',{session:owner,body:{code:active}});
+ assert.equal((await preview()).status,200);
+ assert.equal(await readFile(join(x.fx.options.directory,'active-entitlement.fqlicense'),'utf8'),active);
+});
+
+test('owner reviews an uploaded license through the browser without enabling paid modules', {skip:!executable,timeout:60000},async t=>{
+ const x=await setup(t,{encrypted:true}),{mainUrl}=x.suite;
+ const {chromium}=createRequire(import.meta.url)(process.env.FIRMQUILL_PLAYWRIGHT||'playwright');
+ const browser=await chromium.launch({executablePath:executable,headless:true});t.after(()=>browser.close());
+ const page=await browser.newPage(),requests=[],errors=[];
+ await page.route('**/*',route=>route.request().url().startsWith(mainUrl)?route.continue():route.abort());
+ page.on('request',r=>requests.push(r.url()));page.on('pageerror',e=>errors.push(String(e)));
+ await page.goto(mainUrl);
+ await page.locator('#login [name=username]').fill('fixture-owner');await page.locator('#login [name=password]').fill(pass);
+ const b=name=>page.getByRole('button',{name,exact:true}).first();
+ await b('Sign in').click();await b('I agree to the Terms of Service').click();
+ await page.locator('nav [data-act=nav][data-key="Module activation"]').first().click();
+ const open=()=>b('Upgrade to Paid: preview').click(),review=()=>b('Review license').click();
+ const upload=buffer=>page.getByLabel('Signed license file').setInputFiles({name:'signed.fqlicense',mimeType:'text/plain',buffer:Buffer.from(x.encrypt(buffer))});
+ const updateFeed={origin:'https://updates.example.com',channel:'current'},terms={updateFeed,licenseId:'c'.repeat(32),issuedAt:second-3600};
+ await open();await upload(x.fx.mint({installationId:'a'.repeat(64)}));await review();
+ await page.getByText(/invalid for this Full Suite installation/).waitFor();
+ await b('Cancel').click();await open();
+ await upload(x.fx.mint({...terms,modules:['software_updates'],expiresAt:second,updateFeed:{...updateFeed,origin:'https://updates.example.com/../private'}}));await review();
+ await page.getByText(/invalid for this Full Suite installation/).waitFor();
+ await upload(x.fx.mint({...terms,modules:['software_updates'],expiresAt:second}));await review();await page.getByRole('heading',{name:'Paid upgrade review'}).waitFor();
+ await page.getByText(/Issuer-approved update source/).waitFor();await page.getByText(updateFeed.origin,{exact:true}).waitFor();
+ await page.getByText('License status: expired.').waitFor();await page.getByText('Software updates',{exact:true}).waitFor();await b('Close').click();
+ await open();await upload(x.fx.mint({...terms,modules:['software_updates','expanded_agent','private-support'],expiresAt:second+60}));await review();
+ await page.getByText('License status: active.').waitFor();await page.getByText(x.fx.id,{exact:true}).last().waitFor();
+ assert.equal(await page.getByText('Requires paid build',{exact:true}).count(),2);
+ await b('Close').click();await page.getByText('Activation status: not activated.').waitFor();
+ assert.ok(requests.every(url=>url.startsWith(mainUrl)));assert.deepEqual(errors,[]);
+ await assert.rejects(readFile(join(x.fx.options.directory,'active-entitlement.fqlicense')),{code:'ENOENT'});
 });

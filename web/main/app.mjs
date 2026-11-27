@@ -1,3 +1,4 @@
+import {kioskPanel,kioskAction} from './time-kiosk-ui.mjs';
 import {bindPasskeyLogin,bindPasskeyManagement} from '/shared/passkeys-ui.mjs';
 import {activationPanel,activationAction,renderRenewalNotice} from './activation-ui.mjs';
 import {csvRecoveryPanel,csvRecoveryAction} from './csv-recovery-ui.mjs';
@@ -96,7 +97,7 @@ function suitePages(){
   const role=session.user.role;
   if(auditPortal)return ['Inventory audit','Setup help'];
   const workforce=['Employee records',...(['owner','hr','payroll'].includes(role)?['Benefits administration']:[])];
-  const pages=role==='owner'?['Approvals','User access','Audit trail','Portable transfers','Managed backups','Module activation',...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
+  const pages=role==='owner'?['Approvals','User access','Time clock kiosk','Audit trail','Portable transfers','Managed backups','Module activation',...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
   return [...(session.user.workspaces||[]),...pages.filter(p=>role==='owner'||session.user.areas?.includes(p)),...(companyId&&(role==='owner'||session.user.areas?.includes('Drives'))?['Drives']:[]),...(role==='owner'?['Migration workspace','Agent access','Planning']:[]),'Setup help'];
 }
 function setup(c){return panel('Company profile',`<p><b>${esc(c.name)}</b></p><p class="quiet">${acts.filter(([v])=>c.activities.includes(v)).map(([,n])=>esc(n)).join(' · ')||'No activities selected'}</p><div class="rule"></div><p>Featured on overview</p><p>${esc(c.featured.join(' · ')||'None')}</p>`,btn('settings','Edit profile'))+
@@ -104,7 +105,7 @@ function setup(c){return panel('Company profile',`<p><b>${esc(c.name)}</b></p><p
 const views={'Overview':home,'Directory':contacts,'Sales':c=>commerceView(c,true),'Purchasing':c=>commerceView(c,false),'Jobs & time':jobs,'Warehouse':c=>warehouse(c,false),'Assembly':c=>warehouse(c,true),'Fixed assets':assetsView,'Accounting':accounting,'Banking':banks,'Reports':reportView,'Payroll':payrollView,'History':history,'Company setup':setup};
 function restrictedJobs(c){return panel('Jobs',table(['Job'],c.jobs.map(j=>[esc(j.name)])),btn('job','New job'))+panel('Time entries',table(['Date','Employee / job','Minutes','Review'],c.time.toReversed().map(t=>[esc(t.date),esc(title(c.employees,t.employee))+' · '+esc(title(c.jobs,t.job)),t.minutes,t.approved?'Approved':btn('approve time','Approve',t.id)])),btn('time','Log time'))+panel('Employees',table(['Name','Work state','Locality'],c.employees.map(e=>[esc(e.name),esc(e.state),esc(e.locality)])));}
 function payrollBridge(){return (session.user.role==='owner'||session.user.areas?.includes('Employee records')?panel('Publish finalized employee paystubs','<p>Import real finalized PDFs from your payroll process. Employees can securely download or print their own published copies. The worksheet does not generate earnings or finalized stubs.</p>',btn('nav','Publish finalized PDFs','Employee records')):'')+panel('Employee deduction instructions','<p>Review confirmed employee contribution instructions for the selected pay date. Apply them through your payroll process. Closed payroll is never changed.</p>',btn('payroll-deductions','View effective deductions'))+(session.user.role==='owner'||session.user.areas?.includes('Benefits administration')?panel('Pending employer plan changes','<p>Review and export pending requests before recording payroll or provider confirmation.</p>',btn('nav','Open employer plan queue','Benefits administration')):'');}
-const endpoints={'Module activation':'module-activation','Managed backups':'managed-backups','Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Agent access':'agent-admin','Setup help':'support/info','Departments':'departments','Project tracker':'projects','Assets & pallets':'assets','Inventory audit':'assets','Purchase requests':'team/purchasing','Time off review':'team/time-off','Planning':'planning','Company knowledge':'company-knowledge','Messages':'collaboration/messages','Collaboration groups':'collaboration/groups','Month-end close':'month-end-close'};
+const endpoints={'Time clock kiosk':'time-kiosk-admin','Module activation':'module-activation','Managed backups':'managed-backups','Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Agent access':'agent-admin','Setup help':'support/info','Departments':'departments','Project tracker':'projects','Assets & pallets':'assets','Inventory audit':'assets','Purchase requests':'team/purchasing','Time off review':'team/time-off','Planning':'planning','Company knowledge':'company-knowledge','Messages':'collaboration/messages','Collaboration groups':'collaboration/groups','Month-end close':'month-end-close'};
 async function loadPage(){
   const generation=++loadGeneration;auxiliary=null;render();
   if(session&&page==='Banking'&&session.user.role==='owner'&&companyId){
@@ -123,7 +124,7 @@ async function loadPage(){
     return;
   }
   if(!session||!endpoints[page])return;
-  try{const response=await api(endpoints[page]+(['Employee records','Benefits administration','Identity connectors','Departments','Project tracker','Assets & pallets','Inventory audit','Purchase requests','Time off review','Planning','Company knowledge','Messages','Collaboration groups'].includes(page)?'?companyId='+encodeURIComponent(companyId)+(page==='Inventory audit'?'&auditOnly=true':''):''));if(generation!==loadGeneration)return;auxiliary=response;render();}
+  try{const response=await api(endpoints[page]+(['Time clock kiosk','Employee records','Benefits administration','Identity connectors','Departments','Project tracker','Assets & pallets','Inventory audit','Purchase requests','Time off review','Planning','Company knowledge','Messages','Collaboration groups'].includes(page)?'?companyId='+encodeURIComponent(companyId)+(page==='Inventory audit'?'&auditOnly=true':''):''));if(generation!==loadGeneration)return;auxiliary=response;render();}
   catch(err){if(generation===loadGeneration){auxiliary={error:err.message};render();}}
 }
 function navButton(key){
@@ -153,7 +154,8 @@ function render(){
   }
   if(full.length)nav+=label('Full Suite')+full.map(navButton).join('');
   let body;
-  if(page==='Module activation'&&full.includes(page))body=activationPanel(auxiliary);
+  if(page==='Time clock kiosk'&&full.includes(page))body=c?kioskPanel(auxiliary):panel(page,'<p>Create or select a company first.</p>');
+  else if(page==='Module activation'&&full.includes(page))body=activationPanel(auxiliary);
   else if(page==='Report builder'&&full.includes(page))body='<div id="report-packet-workspace"></div>';
   else if(page==='Company knowledge'&&full.includes(page))body=mainKnowledgeContent(auxiliary,c);
   else if(page==='Planning'&&full.includes(page))body=c?(auxiliary?.error?panel('Planning unavailable','<p>'+esc(auxiliary.error)+'</p>'):auxiliary?renderPlanning(c,auxiliary.day,auxiliary):panel('Planning','<p>Loading company planning…</p>')):panel('Planning','<p>Create a company first.</p>');
@@ -235,6 +237,7 @@ async function action(type,key){
   if(type==='nav'){page=key;menu=false;await loadPage();window.scrollTo(0,0);return;}
   if(type==='menu'){menu=!menu;render();return;}
   const context={session,companyId,auxiliary,api,formModal,closeModal,download,toast,async refresh(response){if(response?.state)useSession(response);else useSession(await api('session'));await loadPage();}};
+  if(page==='Time clock kiosk'&&type.startsWith('kiosk-'))return kioskAction(type,key,context);
   if(page==='Module activation'&&activationAction(type,context))return;
   if(page==='Banking'&&type==='csv-recovery-preview'){
     const generation=loadGeneration,selected=companyId;
