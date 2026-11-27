@@ -12,6 +12,17 @@ const magic = Buffer.from('FQDBAK01');
 const saltLength = 16, ivLength = 12, tagLength = 16;
 const headerLength = magic.length + saltLength + ivLength;
 export const MAX_DATABASE_BYTES = 64 * 1024 * 1024;
+export const RECOVERY_SIZE_WARNING_BYTES = 56 * 1024 * 1024;
+// A logical image estimate only: WAL/free OS disk and recovery condition are separate.
+export function recoveryCapacity(db) {
+  const pages=db.prepare('PRAGMA page_count').get().page_count;
+  const size=db.prepare('PRAGMA page_size').get().page_size;
+  const logicalBytes=pages*size;
+  if(!Number.isSafeInteger(pages)||pages<0||!Number.isSafeInteger(size)||size<=0||!Number.isSafeInteger(logicalBytes))return null;
+  return {logicalBytes,warningBytes:RECOVERY_SIZE_WARNING_BYTES,limitBytes:MAX_DATABASE_BYTES,
+    status:logicalBytes>MAX_DATABASE_BYTES?'over-limit':logicalBytes>=RECOVERY_SIZE_WARNING_BYTES?'near-limit':'under-warning'};
+}
+
 
 async function keyFor(password, salt) {
   if (typeof password !== 'string' || Array.from(password).length < 12) throw Error('Use a backup password of at least 12 characters.');

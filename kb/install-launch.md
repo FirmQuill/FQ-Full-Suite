@@ -1,6 +1,6 @@
 # Install and launch FirmQuill Full Suite
 
-Article: install-launch · Installed version: 0.6.0-preview.1 · Scope: public initial setup only. Verified against host.mjs, server.mjs and the local setup tests.
+Article: install-launch · Installed version: 0.6.5 · Scope: public initial setup only. Verified against host.mjs, server.mjs and the local setup tests.
 
 ## Prerequisites
 

@@ -47,7 +47,7 @@ function transferView(session){
     panel('Full Suite records','<p>Use a Full Suite database backup for disaster recovery. User accounts, roles, worker clock records, correction requests, server audit events and pending approvals stay with the installation. Approved time posted to company books travels in the portable snapshot.</p>');
 }
 function suiteContent(page,data,session,companyId){
-  if(['Migration workspace','Agent access','Setup help'].includes(page))return connectedContent(page,data,session);
+  if(['Migration workspace','Setup help'].includes(page))return connectedContent(page,data,session);
   if(page==='Portable transfers')return transferView(session);
   if(!data)return '<p class="quiet">Loading records…</p>';
   if(data.error)return `<div class="callout warn">${esc(data.error)}</div>`;

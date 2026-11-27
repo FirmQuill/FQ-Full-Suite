@@ -1,8 +1,8 @@
-// Documentation retrieval has no database, agent-token or provider dependency.
+// Local documentation retrieval has no company database or external provider dependency.
 import {readFile,realpath,stat} from 'node:fs/promises';
 import {resolve,relative,isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
-export const INSTALLED_VERSION='0.6.0-preview.1';
+export const INSTALLED_VERSION='0.6.5';
 const appDirectory=fileURLToPath(new URL('./',import.meta.url)),defaultRoot=fileURLToPath(new URL('./kb/',import.meta.url));
 const fail=(ok,message,status=400)=>{if(!ok)throw Object.assign(Error(message),{status});};
 const inside=(parent,child)=>{const r=relative(parent,child);return r===''||(!r.startsWith('..\\')&&!r.startsWith('../')&&r!=='..'&&!isAbsolute(r));};
@@ -13,8 +13,8 @@ function question(value){fail(typeof value==='string'&&value.trim().length>0&&Bu
 function citation(item,heading=''){return {id:item.id,title:item.title,version:INSTALLED_VERSION,section:heading,url:'/api/support/article?id='+encodeURIComponent(item.id)+(heading?'#'+heading.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,''):'')};}
 
 /** Explicit private manual opt-in only. Missing docs fail support requests, never app startup. */
-export function createSupportService({documentationRoot}={}){
-  const privateMode=documentationRoot!==undefined;
+export function createSupportService({documentationRoot,signedSupportFiles}={}){
+  const privateMode=documentationRoot!==undefined||signedSupportFiles!==undefined;
   const configuredValid=!privateMode||(typeof documentationRoot==='string'&&isAbsolute(documentationRoot)&&!inside(appDirectory,resolve(documentationRoot)));
   const selectedRoot=privateMode&&configuredValid?resolve(documentationRoot):defaultRoot;
   async function safeRoot(){
@@ -24,6 +24,11 @@ export function createSupportService({documentationRoot}={}){
   }
   async function readDocument(file,maxBytes=256*1024){
     fail(/^[a-z0-9-]+\.(md|json)$/.test(file),'Invalid installed documentation filename.',503);
+    if(signedSupportFiles!==undefined){
+      const body=signedSupportFiles?.[file];
+      fail(typeof body==='string'&&Buffer.byteLength(body)<=maxBytes,'Verified support package or article is not available.',503);
+      return body;
+    }
     const dir=await safeRoot();let location,body,metadata;
     try{location=await realpath(resolve(dir,file));}catch{fail(false,'Support documentation is unavailable. Contact the host administrator.',503);}
     fail(inside(dir,location),'Documentation references must stay inside the selected directory.',503);

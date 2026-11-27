@@ -28,3 +28,14 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:55vh;overflow:auto;fo
 }
 
 .worker-logo-preview{object-fit:contain;object-position:left center;max-width:100%;border:1px solid currentColor;border-radius:.35rem;}
+
+.shell aside .navgroup { margin:.35rem 0; }
+.shell aside .navgroup-head { display:grid; grid-template-columns:minmax(0,1fr) 2.5rem; align-items:stretch; }
+.shell aside .navgroup-head button { width:100%; margin:0; font-weight:700; }
+.shell aside .navgroup-head .nav-chevron { text-align:center; padding-inline:.25rem; }
+.shell aside .navgroup-links { padding-inline-start:.75rem; }
+.shell aside .navgroup-links[hidden] { display:none; }
+.shell aside .fq-legal-link { display:inline-block; color:inherit; padding:.5rem .75rem; text-decoration:underline; }
+.fq-section-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,14rem),1fr)); gap:.75rem; }
+.fq-section-card { padding:.85rem; border:1px solid #9aaeb6; border-radius:.65rem; }
+.fq-section-card h2 { font-size:1rem; margin:0 0 .5rem; }

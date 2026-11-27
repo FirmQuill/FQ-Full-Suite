@@ -4,3 +4,5 @@
 select{width:100%;min-width:0}.enrollment,.enrollment form,.enrollment label{min-width:0;max-width:100%}.enrollment p,.shift p{overflow-wrap:anywhere}
 
 .brand{max-width:100%;min-width:0;line-height:1.15}.brand span{min-width:0;overflow-wrap:anywhere}.brand img{width:auto;max-width:92px;height:36px;object-fit:contain;flex:none}.brand img[hidden]{display:none}
+
+.fq-worker-legal { margin:1rem auto; padding:.5rem; text-align:center; }

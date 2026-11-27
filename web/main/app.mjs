@@ -1,3 +1,4 @@
+import {visibleNavigation,navigationGroupMarkup} from './navigation-groups.mjs';
 import {kioskPanel,kioskAction} from './time-kiosk-ui.mjs';
 import {bindPasskeyLogin,bindPasskeyManagement} from '/shared/passkeys-ui.mjs';
 import {activationPanel,activationAction,renderRenewalNotice} from './activation-ui.mjs';
@@ -28,12 +29,14 @@ const app=document.querySelector('#app'),dialog=document.querySelector('dialog')
 const brand='<div class="brand"><img src="/shared/mark.svg" alt="">FirmQuill</div>';
 let session=null,companyId='',page='Overview',menu=false,busy=false,epoch=0;
 let renewalTimer,renewalReceivedAt=0;
+const collapsedGroups=new Set();
+let sectionPage=null,visibleGroups=[];
 let auxiliary=null,loadGeneration=0,draftRequestId='',closePeriod='';
 let idleTimer,lastActivity=0;
 const idleLimit=5*60*1000;
 const localDate=()=>{const now=new Date();return [now.getFullYear(),String(now.getMonth()+1).padStart(2,'0'),String(now.getDate()).padStart(2,'0')].join('-');};
 let filter={from:'2000-01-01',through:localDate(),group:''};
-const readOnlyActs=new Set(['nav','menu','refresh','logout','detail','worksheet','print document','get attachment','export','cancel','support-search','support-ask','support-article','desk-export','assets-export','assets-history','assets-count-detail','team-purchase-detail']);
+const readOnlyActs=new Set(['nav','nav-fold','nav-section','menu','refresh','logout','detail','worksheet','print document','get attachment','export','cancel','support-search','support-ask','support-article','desk-export','assets-export','assets-history','assets-count-detail','team-purchase-detail']);
 function toast(message){notice.textContent=message;clearTimeout(toast.timer);toast.timer=setTimeout(()=>notice.textContent='',4600);}
 function showError(error){
   const el=dialog.open?dialog.querySelector('.error'):app.querySelector('.error');
@@ -41,6 +44,7 @@ function showError(error){
 }
 function closeModal(){dialog.close();dialog.replaceChildren();dialog.removeAttribute("aria-labelledby");dialog.onsubmit=null;dialog.onchange=null;}
 function signedOut(){
+  sectionPage=null;collapsedGroups.clear();
   epoch++;loadGeneration++;clearTimeout(idleTimer);clearTimeout(renewalTimer);session=null;companyId='';page='Overview';menu=false;busy=false;auxiliary=null;filter.group='';closePeriod='';
   closeModal();notice.textContent='';gate();
 }
@@ -60,7 +64,7 @@ document.addEventListener('visibilitychange',()=>{if(session&&Date.now()-lastAct
 function gate(){
   const setup=new URLSearchParams(location.hash.slice(1)).get('setup');
   if(setup){app.innerHTML=`<div class="gatepanel"><h1>Set up your separate ERP login</h1><form id="setup">${input('password','Choose password','password','','minlength="12" autocomplete="new-password"')}${input('confirm','Confirm password','password','','minlength="12" autocomplete="new-password"')}<p class="error" role="alert"></p><button class="primary">Activate ERP login</button></form></div>`;return;}
-  app.innerHTML=`<div class="gate"><div class="gateart">${brand}<section><p class="eyebrow">Full Suite</p><h2>Company books</h2><div class="bookart" aria-hidden="true"></div></section><p class="foot small">Company-hosted workspace</p></div><div class="gatepanel"><p class="eyebrow">FirmQuill &nbsp; / &nbsp; Full Suite</p><h1>Sign in</h1><p class="quiet">Use your individual company account to open your assigned books.</p><form id="login">${input('username','Username','text','','autocomplete="username" autocapitalize="none" spellcheck="false"')}${input('password','Password','password','','autocomplete="current-password"')}<div class="error" role="alert"></div><button class="primary">Sign in</button></form><p class="small quiet">For clock-in and timesheets, open your company’s worker portal.</p></div></div>`;
+  app.innerHTML=`<div class="gate"><div class="gateart">${brand}<section><p class="eyebrow">Full Suite</p><h2>Company books</h2><div class="bookart" aria-hidden="true"></div></section><p class="foot small">Company-hosted workspace</p></div><div class="gatepanel"><p class="eyebrow">FirmQuill &nbsp; / &nbsp; Full Suite</p><h1>Sign in</h1><p class="quiet">Use your individual company account to open your assigned books.</p><form id="login">${input('username','Username','text','','autocomplete="username" autocapitalize="none" spellcheck="false"')}${input('password','Password','password','','autocomplete="current-password"')}<div class="error" role="alert"></div><button class="primary">Sign in</button></form><p class="small quiet">For clock-in and timesheets, open your company’s worker portal.</p><p><a href="/legal/legal.html" target="_blank" rel="noopener">Legal</a></p></div></div>`;
   const loginForm=app.querySelector('#login');api('identity/providers').then(p=>{if(loginForm.isConnected)loginForm.insertAdjacentHTML('afterend',(p.providers||[]).map(p=>`<p><a href="/api/identity/oidc/start?id=${encodeURIComponent(p.id)}">ERP sign-in with ${esc(p.name)}</a></p>`).join(''));}).catch(()=>{});
   void bindPasskeyLogin(loginForm,api,async next=>{useSession(next);closeModal();notice.textContent='';await loadPage();});
 }
@@ -87,27 +91,29 @@ async function api(path,body){
 function useSession(next){
   check(next?.user&&Array.isArray(next?.state?.companies),'The server returned an incomplete workspace. Sign in again.');
   const old=session?.user?.id;session=next;renewalReceivedAt=performance.now();
-  if(old!==next.user.id){epoch++;lastActivity=0;touch();page=auditPortal?'Inventory audit':'Overview';companyId='';filter.group='';auxiliary=null;}
+  if(old!==next.user.id){sectionPage=null;collapsedGroups.clear();epoch++;lastActivity=0;touch();page=auditPortal?'Inventory audit':'Overview';companyId='';filter.group='';auxiliary=null;}
   if(!next.state.companies.some(c=>c.id===companyId)){companyId=next.state.companies[0]?.id||'';filter.group='';}
   if(filter.group&&!next.state.groups.some(g=>g.id===filter.group))filter.group='';
 }
 function setupFields(){return `<fieldset><legend>What does this company do?</legend>${choices('activities',acts)}</fieldset><div class="callout small"><b>Featured workflows</b><p id="suggested">Accounting · Reports</p></div>`;}
 function previewSettings(form){const out=form.querySelector('#suggested');if(out)out.textContent=recommended(new FormData(form).getAll('activities')).join(' · ');}
+function auditAccess(){return session?.user.role==='owner'||session?.user.workspaces?.includes('Inventory audit');}
 function suitePages(){
   const role=session.user.role;
-  if(auditPortal)return ['Inventory audit','Setup help'];
+  if(auditPortal)return auditAccess()?['Inventory audit','Setup help']:[];
   const workforce=['Employee records',...(['owner','hr','payroll'].includes(role)?['Benefits administration']:[])];
   const pages=role==='owner'?['Approvals','User access','Time clock kiosk','Audit trail','Portable transfers','Managed backups','Module activation',...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
-  return [...(session.user.workspaces||[]),...pages.filter(p=>role==='owner'||session.user.areas?.includes(p)),...(companyId&&(role==='owner'||session.user.areas?.includes('Drives'))?['Drives']:[]),...(role==='owner'?['Migration workspace','Agent access','Planning']:[]),'Setup help'];
+  return [...(session.user.workspaces||[]),...pages.filter(p=>role==='owner'||session.user.areas?.includes(p)),...(companyId&&(role==='owner'||session.user.areas?.includes('Drives'))?['Drives']:[]),...(role==='owner'?['Migration workspace','Planning']:[]),'Setup help'];
 }
 function setup(c){return panel('Company profile',`<p><b>${esc(c.name)}</b></p><p class="quiet">${acts.filter(([v])=>c.activities.includes(v)).map(([,n])=>esc(n)).join(' · ')||'No activities selected'}</p><div class="rule"></div><p>Featured on overview</p><p>${esc(c.featured.join(' · ')||'None')}</p>`,btn('settings','Edit profile'))+
   panel('Workspaces','<p>Each company keeps its own contacts, stock, document numbers and journals.</p>',session.user.role==='owner'?btn('company','Add company'):'');}
 const views={'Overview':home,'Directory':contacts,'Sales':c=>commerceView(c,true),'Purchasing':c=>commerceView(c,false),'Jobs & time':jobs,'Warehouse':c=>warehouse(c,false),'Assembly':c=>warehouse(c,true),'Fixed assets':assetsView,'Accounting':accounting,'Banking':banks,'Reports':reportView,'Payroll':payrollView,'History':history,'Company setup':setup};
 function restrictedJobs(c){return panel('Jobs',table(['Job'],c.jobs.map(j=>[esc(j.name)])),btn('job','New job'))+panel('Time entries',table(['Date','Employee / job','Minutes','Review'],c.time.toReversed().map(t=>[esc(t.date),esc(title(c.employees,t.employee))+' · '+esc(title(c.jobs,t.job)),t.minutes,t.approved?'Approved':btn('approve time','Approve',t.id)])),btn('time','Log time'))+panel('Employees',table(['Name','Work state','Locality'],c.employees.map(e=>[esc(e.name),esc(e.state),esc(e.locality)])));}
 function payrollBridge(){return (session.user.role==='owner'||session.user.areas?.includes('Employee records')?panel('Publish finalized employee paystubs','<p>Import real finalized PDFs from your payroll process. Employees can securely download or print their own published copies. The worksheet does not generate earnings or finalized stubs.</p>',btn('nav','Publish finalized PDFs','Employee records')):'')+panel('Employee deduction instructions','<p>Review confirmed employee contribution instructions for the selected pay date. Apply them through your payroll process. Closed payroll is never changed.</p>',btn('payroll-deductions','View effective deductions'))+(session.user.role==='owner'||session.user.areas?.includes('Benefits administration')?panel('Pending employer plan changes','<p>Review and export pending requests before recording payroll or provider confirmation.</p>',btn('nav','Open employer plan queue','Benefits administration')):'');}
-const endpoints={'Time clock kiosk':'time-kiosk-admin','Module activation':'module-activation','Managed backups':'managed-backups','Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Agent access':'agent-admin','Setup help':'support/info','Departments':'departments','Project tracker':'projects','Assets & pallets':'assets','Inventory audit':'assets','Purchase requests':'team/purchasing','Time off review':'team/time-off','Planning':'planning','Company knowledge':'company-knowledge','Messages':'collaboration/messages','Collaboration groups':'collaboration/groups','Month-end close':'month-end-close'};
+const endpoints={'Time clock kiosk':'time-kiosk-admin','Module activation':'module-activation','Managed backups':'managed-backups','Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Setup help':'support/info','Departments':'departments','Project tracker':'projects','Assets & pallets':'assets','Inventory audit':'assets','Purchase requests':'team/purchasing','Time off review':'team/time-off','Planning':'planning','Company knowledge':'company-knowledge','Messages':'collaboration/messages','Collaboration groups':'collaboration/groups','Month-end close':'month-end-close'};
 async function loadPage(){
   const generation=++loadGeneration;auxiliary=null;render();
+  if(auditPortal&&!auditAccess())return;
   if(session&&page==='Banking'&&session.user.role==='owner'&&companyId){
     try{const result=await api('csv-import-recovery?companyId='+encodeURIComponent(companyId));if(generation===loadGeneration){auxiliary=result;render();}}
     catch(e){if(generation===loadGeneration){auxiliary={error:e.message};render();}}return;
@@ -128,9 +134,15 @@ async function loadPage(){
   catch(err){if(generation===loadGeneration){auxiliary={error:err.message};render();}}
 }
 function navButton(key){
-  return `<button type="button" data-act="nav" data-key="${esc(key)}"${page===key?' class="active" aria-current="page"':''}>${esc(key)}</button>`;
+  return `<button type="button" data-act="nav" data-key="${esc(key)}"${!sectionPage&&page===key?' class="active" aria-current="page"':''}>${esc(key)}</button>`;
 }
-function label(text){return `<p class="navlabel">${esc(text)}</p>`;}
+function groupMarkup(g){
+  return navigationGroupMarkup(g,{open:!collapsedGroups.has(g.id),active:sectionPage===g.id,links:g.links.map(navButton).join(''),create:g.canCreateCompany?btn('company','Create company'):''});
+}
+function groupDashboard(g){
+  const cards=g.links.map(key=>'<article class="fq-section-card"><h2>'+esc(key)+'</h2>'+btn('nav','Open '+key,key)+'</article>').join('');
+  return '<div class="card"><p>'+esc(g.description)+'</p><div class="fq-section-grid">'+cards+(g.canCreateCompany?'<article class="fq-section-card"><h2>Company administration</h2>'+btn('company','Create company','','primary')+'</article>':'')+'</div></div>';
+}
 function roleFilter(root){
   const role=session?.user.role;
   for(const button of root.querySelectorAll('button[data-act]')){
@@ -147,14 +159,14 @@ function render(){
   const full=[...suitePages(),...(!auditPortal&&c&&(user.role==='owner'||user.areas?.includes('Reports'))?['Report builder']:[])];
   const allowed=key=>!auditPortal&&(user.role==='owner'||user.areas?.includes(key));
   if((!views[page]&&!full.includes(page))||(!full.includes(page)&&!allowed(page)))page=Object.keys(views).find(allowed)||full[0]||'Overview';
-  let nav=allowed('Overview')?label('Workspace')+navButton('Overview'):'';
-  if(c){
-    nav+=(allowed('Directory')?navButton('Directory'):'')+(c.featured.some(allowed)?label('Featured'):'')+c.featured.filter(allowed).map(navButton).join('')+
-      label('All tools')+[...modules.filter(m=>!c.featured.includes(m)),'History','Company setup'].filter(allowed).map(navButton).join('');
-  }
-  if(full.length)nav+=label('Full Suite')+full.map(navButton).join('');
+  const routes=[...(allowed('Overview')?['Overview']:[]),...(c?['Directory',...modules,'History','Company setup'].filter(allowed):[]),...full];
+  visibleGroups=auditPortal?[]:visibleNavigation(routes,{canCreateCompany:user.role==='owner'});
+  const activeGroup=visibleGroups.find(g=>g.id===sectionPage);
+  if(!activeGroup)sectionPage=null;
+  const nav=auditPortal?full.map(navButton).join(''):visibleGroups.map(groupMarkup).join('');
   let body;
-  if(page==='Time clock kiosk'&&full.includes(page))body=c?kioskPanel(auxiliary):panel(page,'<p>Create or select a company first.</p>');
+  if(activeGroup)body=groupDashboard(activeGroup);
+  else if(page==='Time clock kiosk'&&full.includes(page))body=c?kioskPanel(auxiliary):panel(page,'<p>Create or select a company first.</p>');
   else if(page==='Module activation'&&full.includes(page))body=activationPanel(auxiliary);
   else if(page==='Report builder'&&full.includes(page))body='<div id="report-packet-workspace"></div>';
   else if(page==='Company knowledge'&&full.includes(page))body=mainKnowledgeContent(auxiliary,c);
@@ -167,15 +179,16 @@ function render(){
   else if(c&&allowed(page))body=page==='Jobs & time'&&!allowed('Payroll')?restrictedJobs(c):page==='Payroll'?(['hr','payroll'].includes(user.role)?panel('Payroll employee records','<p>Publish finalized payroll PDFs from Employee records. Employer contribution changes remain pending until reviewed.</p>',allowed('Employee records')?btn('nav','Open employee records','Employee records'):'')+payrollBridge():views[page](c,s,filter)+(['owner','payroll'].includes(user.role)?payrollBridge():'')):views[page](c,s,filter);
   else if(c)body=panel('ERP access','<p>No ERP areas are enabled for this login. Ask your administrator to assign access.</p>');
   else body=panel(user.role==='owner'?'Set up your books':'Company access',user.role==='owner'?'<p>Create a company, or import an encrypted Lite backup into this empty workspace.</p>':'<p>Ask your owner to assign your account to a company.</p>',user.role==='owner'?btn('company','Create company','','primary')+btn('nav','Import from Lite','Portable transfers'):'');
-  if(page==='Banking'&&!auditPortal&&c&&user.role==='owner')body+=csvRecoveryPanel(auxiliary);
-  if(page==='Payroll'&&!auditPortal&&c&&allowed(page)&&['owner','payroll'].includes(user.role)){
+  if(!activeGroup&&page==='Banking'&&!auditPortal&&c&&user.role==='owner')body+=csvRecoveryPanel(auxiliary);
+  if(!activeGroup&&page==='Payroll'&&!auditPortal&&c&&allowed(page)&&['owner','payroll'].includes(user.role)){
     body=(auxiliary?.data?manualPayrollContent(auxiliary):panel('Manual payroll',auxiliary?.error?'<p>'+esc(auxiliary.error)+'</p>':'<p>Loading company payroll...</p>'))+body;
   }
-  if(page==='Payroll'&&!auditPortal&&c&&allowed(page)&&!['hr','payroll'].includes(user.role))body=panel('Free federal estimate','<p>The existing federal worksheet is an estimate only. It does not create, process or finalize payroll.</p>')+body;
+  if(!activeGroup&&page==='Payroll'&&!auditPortal&&c&&allowed(page)&&!['hr','payroll'].includes(user.role))body=panel('Free federal estimate','<p>The existing federal worksheet is an estimate only. It does not create, process or finalize payroll.</p>')+body;
+  if(auditPortal&&!auditAccess())body=panel('Asset workspace unavailable.','<p>Ask the company owner for access to the asset audit workspace.</p>');
   if(c?.projectScope==='permitted-records')body='<div class="callout"><p>These views and totals include only records permitted for your account. Ask the owner for a complete company close.</p></div>'+body;
   const picker=c?`<label for="company">Company</label><select id="company" aria-label="Active company" class="picker">${options(mapping(s.companies))}</select>`:'';
-  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><div class="sidebarfoot small">FirmQuill · Full Suite preview</div></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}${!auditPortal&&['owner','manager'].includes(user.role)?'<div data-passkey-management></div>':''}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1>${page==='Overview'?'Workspace overview':esc(page)}</h1></div>${c&&page==='Overview'?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
-  mountContextualHelp(app.querySelector('#contextual-help'),{page,companyId,api});
+  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><a class="sidebarfoot small fq-legal-link" href="/legal/legal.html" target="_blank" rel="noopener">Legal</a></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}${!auditPortal&&['owner','manager'].includes(user.role)?'<div data-passkey-management></div>':''}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1${activeGroup?' data-department-heading tabindex="-1"':''}>${activeGroup?esc(activeGroup.title)+' overview':page==='Overview'?'Workspace overview':esc(page)}</h1></div>${!activeGroup&&c&&page==='Overview'?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
+  if(!activeGroup&&(!auditPortal||auditAccess()))mountContextualHelp(app.querySelector('#contextual-help'),{page,companyId,api});
   bindPasskeyManagement(app.querySelector('[data-passkey-management]'),api);
   const renewalSlot=app.querySelector('#module-renewal');
   if(renewalSlot){
@@ -187,12 +200,12 @@ function render(){
     paint();
   }
   if(c)app.querySelector('#company').value=companyId;
-  if(page==='Reports'&&c)app.querySelector('[name=group]').value=filter.group;
+  if(!activeGroup&&page==='Reports'&&c)app.querySelector('[name=group]').value=filter.group;
   roleFilter(app);
   bindWorkspaceSearch(app,api,companyId);
   bindAssetsLookup(app,auxiliary);
-  if(page==='Report builder'){const scopedCompany=companyId;void mountPacket(app.querySelector('#report-packet-workspace'),{run:input=>api('report-packets?companyId='+encodeURIComponent(scopedCompany),input)});}
-  if(page==='Drives')mountDrive(app.querySelector('#drive-workspace'),{companyId,csrf:session.csrf,
+  if(!activeGroup&&page==='Report builder'){const scopedCompany=companyId;void mountPacket(app.querySelector('#report-packet-workspace'),{run:input=>api('report-packets?companyId='+encodeURIComponent(scopedCompany),input)});}
+  if(!activeGroup&&page==='Drives')mountDrive(app.querySelector('#drive-workspace'),{companyId,csrf:session.csrf,
     markup:async data=>privateFtpsMarkup(data,await api(privateFtpsQuery(data)).catch(()=>null)),
     submitExtra:(form,data,{refresh})=>submitPrivateFtps(form,data,{api,toast,refresh})});
 }
@@ -234,7 +247,15 @@ async function action(type,key){
   if(type==='logout'){await api('logout',{});signedOut();return;}
   if(!session)return;
   if(type==='refresh'){useSession(await api('session'));await loadPage();toast('Workspace refreshed.');return;}
-  if(type==='nav'){page=key;menu=false;await loadPage();window.scrollTo(0,0);return;}
+  if(type==='nav-fold'){
+    if(!visibleGroups.some(g=>g.id===key))return;
+    if(collapsedGroups.has(key))collapsedGroups.delete(key);else collapsedGroups.add(key);
+    render();app.querySelector(`[data-act="nav-fold"][data-key="${key}"]`)?.focus();return;
+  }
+  if(type==='nav-section'){
+    if(visibleGroups.some(g=>g.id===key)){sectionPage=key;menu=false;render();app.querySelector('[data-department-heading]')?.focus();window.scrollTo(0,0);}return;
+  }
+  if(type==='nav'){const g=visibleGroups.find(g=>g.links.includes(key));if(g)collapsedGroups.delete(g.id);sectionPage=null;page=key;menu=false;await loadPage();window.scrollTo(0,0);return;}
   if(type==='menu'){menu=!menu;render();return;}
   const context={session,companyId,auxiliary,api,formModal,closeModal,download,toast,async refresh(response){if(response?.state)useSession(response);else useSession(await api('session'));await loadPage();}};
   if(page==='Time clock kiosk'&&type.startsWith('kiosk-'))return kioskAction(type,key,context);
@@ -449,3 +470,5 @@ async function reconnect(){
 }
 await reconnect();
 
+
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&menu){menu=false;render();app.querySelector('.mobilemenu')?.focus();}});

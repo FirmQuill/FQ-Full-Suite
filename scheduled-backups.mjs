@@ -11,7 +11,7 @@ const inside=(where,path)=>{const rel=relative(where,path);return rel===''||(!is
 const iso=d=>d.toISOString();
 const retryAfter=15*60*1000;
 const allowedCode=new Set(['backup-unavailable','size-limit','storage-failure','encrypted-archive-present']);
-const eventType=new Set(['agent-approval','reviewed-lite-import']);
+const eventType=new Set(['reviewed-lite-import']);
 export function backupOptionsFromEnv(env=process.env){return {directory:env.FIRMQUILL_BACKUP_DIRECTORY,keyFile:env.FIRMQUILL_BACKUP_KEY_FILE};}
 
 export function createScheduledBackups({db,database,options={},clock=()=>new Date(),archive=backupDatabase}){
@@ -51,6 +51,7 @@ export function createScheduledBackups({db,database,options={},clock=()=>new Dat
     catch(e){requireThat(false,503,e.status===503?e.message:'The host backup directory or recovery key is unavailable. Ask your host operator.');}
   }
   const prefix=p=>'firmquill-managed-'+p.scope+'-';
+  // Recognize previously created archives for status/retention only. No old event trigger is registered.
   const valid=p=>new RegExp('^'+prefix(p)+'(daily-\\d{4}-\\d{2}-\\d{2}|before-(agent-approval|reviewed-lite-import)-[a-f0-9-]{36})\\.fqdb$');
   const metaPath=(directory,p)=>join(directory,prefix(p)+'status.json');
   async function readStatus(directory,p){

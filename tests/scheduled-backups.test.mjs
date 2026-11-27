@@ -4,10 +4,9 @@ import {mkdtemp,mkdir,readdir,readFile,rename,rm,writeFile} from 'node:fs/promis
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createRequire} from 'node:module';
-import {randomUUID} from 'node:crypto';
 import {DatabaseSync} from 'node:sqlite';
 import {createSuite} from '../server.mjs';
-import {backupDatabase,restoreDatabase} from '../recovery.mjs';
+import {backupDatabase,restoreDatabase,recoveryCapacity} from '../recovery.mjs';
 import {openStore,putUser,saveBooks,tx,passwordHash} from '../store.mjs';
 import {newVault} from '../shared/core.mjs';
 import {exportLite} from '../transfer.mjs';
@@ -46,12 +45,7 @@ async function client(base,username='owner'){
 async function next(check){for(let i=0;i<120;i++){const v=await check();if(v)return v;await new Promise(r=>setTimeout(r,30));}assert.fail('Expected managed backup status did not appear.');}
 const options=(p={})=>({dailyUTC:'',beforeCommit:false,retain:2,version:0,...p});
 const names=async x=>(await readdir(x.directory)).filter(n=>n.endsWith('.fqdb')).sort();
-function readArchive(file){const db=new DatabaseSync(file,{readOnly:true});try{return {state:JSON.parse(db.prepare('SELECT body FROM books').get().body),proposals:db.prepare('SELECT id,status FROM agent_proposals').all()};}finally{db.close();}}
-async function proposal(x,owner,name){
- const current=await owner.ok('session'),grant=await owner.ok('agent-admin/action',{type:'grant',companyId:x.company,name:'Synthetic Agent',recordTypes:['contacts'],allowProposals:true});
- const r=await fetch(x.suite.mainUrl+'/api/agents/v1/proposals',{method:'POST',headers:{'Content-Type':'application/json',Authorization:'Bearer '+grant.token},body:JSON.stringify({companyId:x.company,revision:current.revision,requestId:randomUUID(),action:{type:'contact',name,kind:'Customer',date:'2026-10-01'}})});
- assert.equal(r.status,200);const result=await r.json();return {type:'decide',id:result.id,revision:current.revision,decision:'approve'};
-}
+function readArchive(file){const db=new DatabaseSync(file,{readOnly:true});try{return {state:JSON.parse(db.prepare('SELECT body FROM books').get().body)};}finally{db.close();}}
 test('explicit policy required; daily encrypted archive is retained, restores, and deduplicates across restart',async t=>{
  const x=await setup(t);let owner=await client(x.suite.mainUrl),manager=await client(x.suite.mainUrl,'manager');
  assert.equal((await manager(statePath)).status,403);
@@ -70,39 +64,6 @@ test('explicit policy required; daily encrypted archive is retained, restores, a
  await restoreDatabase(join(x.directory,last.lastArchive.name),destination,secret);
  assert.equal(readArchive(destination).state.companies[0].name,'Synthetic managed backup');
  assert.ok(!(JSON.stringify(last).includes(x.root)||JSON.stringify(last).includes(secret)));
-});
-
-test('AI approval backup failure and concurrent database writes leave proposal pending; retry archives immediately before a write',async t=>{
- let changedOnce=false,changeDuring=false;
- const archive=async(database,destination,key)=>{
-   const result=await backupDatabase(database,destination,key);
-   if(changeDuring&&!changedOnce){
-     changedOnce=true;
-     const d=openStore(database);try{d.prepare("INSERT INTO audit(at,actor,companyId,kind,detail) VALUES(?,?,?,?,?)").run('2026-10-01T12:00:00Z','fixture','','unrelated event','test-only concurrent non-books write');}finally{d.close();}
-   }
-   return result;
- };
- const x=await setup(t,{archive}),owner=await client(x.suite.mainUrl);
- await owner.ok(statePath,options({beforeCommit:true}));
- const decide=await proposal(x,owner,'Synthetic backup-protected customer');
- await rename(x.keyFile,x.keyFile+'.offline');
- const failed=await owner('agent-admin/action',decide);assert.equal(failed.status,503);assert.match(failed.data.error,/Nothing was applied/);
- assert.equal((await owner.ok('agent-admin')).proposals[0].status,'pending');assert.equal((await owner.ok(statePath)).lastError,'backup-unavailable');
- await rename(x.keyFile+'.offline',x.keyFile);changeDuring=true;
- const stale=await owner('agent-admin/action',decide);assert.equal(stale.status,409,JSON.stringify(stale.data));assert.match(stale.data.error,/backup was running/);
- assert.equal((await owner.ok('agent-admin')).proposals[0].status,'pending');assert.ok(changedOnce);
- await owner.ok('agent-admin/action',decide);
- const status=await owner.ok(statePath);assert.equal(status.lastArchive.reason,'agent-approval');
- const destination=join(x.root,'preapproval.sqlite');
- await restoreDatabase(join(x.directory,status.lastArchive.name),destination,secret);
- const snapshot=readArchive(destination);
- assert.equal(snapshot.proposals.find(p=>p.id===decide.id).status,'pending');
- assert.ok(!snapshot.state.companies[0].parties.some(p=>p.name==='Synthetic backup-protected customer'));
- assert.equal((await owner.ok('agent-admin')).proposals[0].status,'approved');
- assert.ok((await owner.ok('session')).state.companies[0].parties.some(p=>p.name==='Synthetic backup-protected customer'));
- const count=(await names(x)).length;
- assert.equal((await owner('agent-admin/action',decide)).status,409);
- assert.equal((await names(x)).length,count,'repeated approval does not trigger an archive');
 });
 
 test('reviewed Lite import stays staged on backup failure; retry creates a pre-import recovery point',async t=>{
@@ -148,4 +109,18 @@ test('actual ERP owner can set and verify the managed backup policy without seei
  const body=await p.locator('body').innerText();
  assert.match(body,/does not mean a full restore was tested/);assert.ok(!body.includes(x.root)&&!body.includes(secret));
  await shot(p,'02-encrypted-archive-status');
+});
+
+test('owner-only logical recovery size is independent from archive status; thresholds preserve existing cap',async t=>{
+ const fixture=await setup(t,{configured:false}),owner=await client(fixture.suite.mainUrl),manager=await client(fixture.suite.mainUrl,'manager');
+ const unprivileged=await manager(statePath);assert.equal(unprivileged.status,403);assert.equal(unprivileged.data.capacity,undefined);
+ const value=await owner.ok(statePath);assert.equal(value.ready,false);assert.equal(value.lastArchive,null);
+ const db=new DatabaseSync(fixture.database,{readOnly:true});
+ try{const pages=db.prepare('PRAGMA page_count').get().page_count,size=db.prepare('PRAGMA page_size').get().page_size;
+ assert.deepEqual(value.capacity,{logicalBytes:pages*size,warningBytes:56*1048576,limitBytes:64*1048576,status:'under-warning'});
+ }finally{db.close();}
+ for(const [mib,status] of [[55,'under-warning'],[56,'near-limit'],[64,'near-limit'],[65,'over-limit']]){
+  const fixtureDb={prepare:q=>({get:()=>q.endsWith('page_size')?{page_size:4096}:{page_count:mib*256}})};
+  assert.equal(recoveryCapacity(fixtureDb).status,status);
+ }
 });

@@ -1,6 +1,6 @@
 # Create the first administrator and sign in
 
-Article: first-admin · Installed version: 0.6.0-preview.1 · Scope: public initial setup only. Verified against host.mjs and server.mjs.
+Article: first-admin · Installed version: 0.6.5 · Scope: public initial setup only. Verified against host.mjs and server.mjs.
 
 ## Prerequisites
 
@@ -18,4 +18,4 @@ Open the books URL printed by the host, enter the owner username and password, a
 
 ## Common errors and escalation
 
-Passwords differ: rerun the prompt and enter the same private password twice. Password too short: choose a longer password. An owner is already configured: use the original owner login and existing workspace; do not try to overwrite it. Cannot sign in: confirm the correct books URL, username and running host. Repeated failures trigger a temporary throttle. Ask the designated host administrator for account recovery; the public support assistant cannot read accounts or recover passwords.
+Passwords differ: rerun the prompt and enter the same private password twice. Password too short: choose a longer password. An owner is already configured: use the original owner login and existing workspace; do not try to overwrite it. Cannot sign in: confirm the correct books URL, username and running host. Repeated failures trigger a temporary throttle. Ask the designated host administrator for account recovery; the public setup guide cannot read accounts or recover passwords.

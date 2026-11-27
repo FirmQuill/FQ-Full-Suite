@@ -11,7 +11,7 @@ const marker='firmquill.activation.v1';
 export const edition='firmquill-full-suite';
 export const modules=Object.freeze(['manual-payroll','private-support']);
 // Recognition for read-only preview does not add runtime entitlements.
-const previewModules=Object.freeze([...modules,'expanded_agent','software_updates']);
+const previewModules=Object.freeze([...modules,'software_updates']);
 const installationId=/^[a-f0-9]{64}$/;
 const codeMax=4096;
 const block=(status,message)=>{throw Object.assign(Error(message),{status});};

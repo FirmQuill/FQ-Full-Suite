@@ -1,6 +1,6 @@
 # FirmQuill Full Suite setup guide
 
-Version 0.6.0-preview.1 · November 26, 2026
+Version 0.6.5 · November 26, 2026
 
 This public guide covers installation and first launch. All screenshots show fictional Harborline records in the running local application. The customer feature manual and company-specific migration handoff are delivered separately. No AI account or documentation subscription is required.
 
@@ -82,7 +82,7 @@ Figure 8. Enter the first company only when the workspace is empty.
 - Confirm the expected company appears in the company picker. For a package, compare the approved migration counts, balances and unresolved-items report with your separate handoff. Do not treat a balanced trial balance alone as proof of migration completeness.
 - Refresh the page. Stop the normal host with Ctrl+C, restart it and sign in again. Confirm the same company and records remain. Reopening an initialized database never reapplies the package.
 - Check that the worker URL opens its sign-in page. Worker accounts and enabled employee features are configured after setup through the customer's separate feature manual.
-- **Setup help** searches only this public guide. It cites the installed version and article. Missing feature guidance is escalated to your designated company support contact. The default assistant has no company-data access and sends nothing to an AI provider.
+- **Setup help** searches only this public guide. It cites the installed version and article. Missing feature guidance is escalated to your designated company support contact. Local setup search has no company-data access and sends nothing to an external provider.
 
 ![Fictional Harborline company present after setup](kb/screenshots/09-setup-verified.png)
 
@@ -120,4 +120,4 @@ The `setup` command prints the preview, requires the literal word `INITIALIZE`, 
 
 Figure 10. A failed validation leaves the setup form available for correction.
 
-For escalation, contact the company owner or designated FirmQuill support contact. Include version `0.6.0-preview.1`, the setup article/step, exact error and safe reproduction steps. Omit passwords, setup links, agent tokens, private exports and screenshots containing real personnel or financial data.
+For escalation, contact the company owner or designated FirmQuill support contact. Include version `0.6.5`, the setup article/step, exact error and safe reproduction steps. Omit passwords, setup links, credentials, private exports and screenshots containing real personnel or financial data.

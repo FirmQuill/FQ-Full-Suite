@@ -74,7 +74,7 @@ async function main(){
   requireThat((!mainOrigin&&!workerOrigin)||(mainOrigin&&workerOrigin&&mainOrigin!==workerOrigin),400,'Set two distinct HTTPS portal origins, or use both loopback defaults.');
   const mainPort=Number(process.env.FIRMQUILL_MAIN_PORT||4179),workerPort=Number(process.env.FIRMQUILL_WORKER_PORT||4180);
   requireThat([mainPort,workerPort].every(p=>Number.isInteger(p)&&p>=1&&p<=65535)&&mainPort!==workerPort,400,'Select two distinct TCP ports.');
-  const supportOptions={...(process.env.FIRMQUILL_SUPPORT_DOCS?{documentationRoot:process.env.FIRMQUILL_SUPPORT_DOCS}:{}),contextualRoot:process.env.FIRMQUILL_CONTEXTUAL_DOCS};
+  const supportOptions={...(process.env.FIRMQUILL_SUPPORT_DOCS?{documentationRoot:process.env.FIRMQUILL_SUPPORT_DOCS}:{}),contextualRoot:process.env.FIRMQUILL_CONTEXTUAL_DOCS,signedSupport:{packagePath:process.env.FIRMQUILL_SIGNED_SUPPORT_PACKAGE,verifierPath:process.env.FIRMQUILL_SUPPORT_PACKAGE_PUBLIC_KEY}};
   const suite=await createSuite({database,mainPort,workerPort,mainOrigin,workerOrigin,supportOptions,activationOptions:activationOptionsFromEnv(),ftpsOptions:ftpsOptionsFromEnv(),backupOptions:backupOptionsFromEnv()});
   console.log('FirmQuill Full Suite   '+(mainOrigin||suite.mainUrl)+'/\nFirmQuill Worker       '+(workerOrigin||suite.workerUrl)+'/');
   let stopping=false;async function stop(){if(stopping)return;stopping=true;await suite.close();}

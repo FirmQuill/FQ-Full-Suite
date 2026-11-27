@@ -9,7 +9,7 @@ const source=fileURLToPath(new URL('./',import.meta.url));
 const mainRoles=new Set(['owner','manager','bookkeeper','viewer','hr','payroll']);
 export const featuredHelpPages=new Set(['Overview','Directory','Sales','Purchasing','Jobs & time','Warehouse','Assembly','Fixed assets','Accounting','Banking','Reports','Payroll','History','Company setup']);
 export const workspaceHelpPages=new Set(['Departments','Project tracker','Assets & pallets','Inventory audit','Company knowledge','Messages','Collaboration groups','Month-end close','Purchase requests','Time off review']);
-export const mainHelpPages=new Set([...featuredHelpPages,...workspaceHelpPages,'Approvals','User access','Audit trail','Portable transfers','Employee records','Benefits administration','Identity connectors','Migration workspace','Agent access','Planning','Drives','Setup help']);
+export const mainHelpPages=new Set([...featuredHelpPages,...workspaceHelpPages,'Approvals','User access','Audit trail','Portable transfers','Employee records','Benefits administration','Identity connectors','Migration workspace','Planning','Drives','Setup help']);
 export const workerHelpPages=new Set(['Home','Setup help','Time','Pay','Reviews','Benefits','My Profile','Contacts','Time off','Company knowledge','Messages','Drives']);
 const contained=(root,path)=>{const rel=relative(root,path);return rel===''||(!isAbsolute(rel)&&!/^\.\.(?:[\\/]|$)/.test(rel));};
 const requireValid=value=>{if(!value)throw Error('Invalid local support package');};

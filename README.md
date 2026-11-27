@@ -1,6 +1,6 @@
 # FirmQuill Full Suite
 
-Version **0.6.0-preview.1** · self-hosted Windows/Node 24 preview
+Version **0.6.5** · self-hosted Windows/Node 24 preview
 
 See [company collaboration](COLLABORATION.md) for the knowledge base, messaging, shared drives, and employee permissions.
 
@@ -8,9 +8,9 @@ Read the illustrated, searchable [public setup guide](SETUP-GUIDE.html), or its 
 
 For a fresh workspace, run `node host.mjs configure` from the extracted application folder and use the private loopback link printed by the host. After setup, run `node host.mjs start`. The existing **Start FirmQuill Full.cmd** launcher and terminal owner setup continue to work. Existing workspaces are never initialized again. The default database remains in the sibling `FirmQuill-data` folder; set `FIRMQUILL_DB` to an absolute path outside the program folder when needed.
 
-Default local portals are http://127.0.0.1:4179/ (books) and http://127.0.0.1:4180/ (employee). Keep the host running. All workflows work without an AI account. Optional customer-selected agents receive only deliberately granted company/type fields and submit proposed additions for owner approval. Default **Setup help** searches only the public setup guide and has no company-data access.
+Default local portals are http://127.0.0.1:4179/ (books) and http://127.0.0.1:4180/ (employee). Keep the host running. This public release contains no AI integration or external agent access. Default **Setup help** searches only the public setup guide and has no company-data access.
 
-The reusable full customer manual is delivered separately for migration or support customers. It is absent from this checkout, public help and the standard runtime package. Company-specific migration packages and handoffs are separate private data; never add them to this repository or download.
+The full customer manual is separate from this public release. It is absent from this checkout, public help and the standard runtime package. Company-specific migration packages and handoffs are separate private data; never add them to this repository or download.
 
 See [multi-line commercial documents](COMMERCE-LINES.md) and [reviewed migration formats](MIGRATION-FORMATS.md). The native QuickBooks Desktop IIF profile accepts a flat customer or vendor list only. Generic multi-line service CSV mappings and fictional fixtures do not establish native QuickBooks Online, Wave or ADP export-schema compatibility. The existing verified bank templates are retained. The built-in federal tax worksheet remains an estimate; the separate manual payroll workflow finalizes company-entered calculations but does not generate tax filings or payment instructions. The companion Lite upgrade remains single-operator. Payroll research is unchanged.
 
@@ -167,3 +167,45 @@ worker portal sign-ins share the same host's capacity. Single sign-on, identity
 provider settings, the existing sign-in attempt limits, and ordinary workspace
 permissions are unchanged. Check this on the intended hardware before relying
 on it for a shift change.
+
+### Optional signed offline support data (0.6.5)
+
+FirmQuill Full Suite remains an Early Development build. The download does
+not include a private manual or an issuer. A host administrator may install
+a separately supplied 0.6.5 `.fqsupport` file by placing it in a protected
+local folder outside the app, then pointing the host at it. The signed file
+contains text documentation only. No scripts, code, branding or other
+modules are installed or executed. It is verified again on each startup.
+
+Use Windows PowerShell (replace the sample paths with your own):
+
+```powershell
+$env:FIRMQUILL_SIGNED_SUPPORT_PACKAGE = 'C:\FirmQuillProtected\site-065.fqsupport'
+$env:FIRMQUILL_SUPPORT_PACKAGE_PUBLIC_KEY = 'C:\FirmQuillProtected\package-public.pem'
+$env:FIRMQUILL_ENTITLEMENT_PUBLIC_KEY = 'C:\FirmQuillProtected\entitlement-public.pem'
+$env:FIRMQUILL_MODULE_INSTALL_DIR = 'C:\FirmQuillProtected\activation'
+node host.mjs
+```
+
+Keep the installation ID and activation directory from your initial setup.
+Obtain both distinct, trusted Ed25519 **public** PEM keys and the matching
+installation-bound package through your issuer's authorized channel. Never
+put an issuer private key on the host. Restrict the folder to the host
+operator and service account (configure NTFS permissions yourself on Windows).
+A package alone does not activate anything. Only a signed license with the
+existing private-support entitlement enables the installed owner manual,
+after sign-in and Terms acceptance. Missing or rejected packages do not
+interrupt ordinary use or public setup help. If signed package settings are
+present, invalid packages do not select an older unsigned owner manual.
+To remove or replace the package, stop the host, update these settings and
+restart; this does not modify books or activation state.
+
+### Public 0.6.5 AI removal and license compatibility
+
+Stop the older host and use a freshly extracted application folder. Do not
+overlay 0.6.5 onto an older program directory. Retain your separate database and
+recovery archives. Existing AI integration records are not deleted, but no
+AI integration routes, UI, or command-line adapter are included in 0.6.5.
+A signed license alone cannot restore removed code. For a prior mixed
+license containing an AI module, ask the issuer for a public-compatible
+reissue for the supported entitlement; ordinary workflows do not need one.

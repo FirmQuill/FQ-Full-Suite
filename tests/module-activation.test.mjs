@@ -193,7 +193,7 @@ test('paid preflight is signed, owner/terms/CSRF scoped, and cannot mutate activ
  const x=await setup(t,{encrypted:true}),{mainUrl,workerUrl}=x.suite,route='paid-upgrade-preview';
  const owner=await login(mainUrl,'owner',false),manager=await login(mainUrl,'manager'),worker=await login(workerUrl,'worker');
  const updateFeed={origin:'https://updates.example.com',channel:'stable'},feedTerms={updateFeed,licenseId:'a'.repeat(32),issuedAt:second-3600,expiresAt:second+60};
- const code=x.fx.mint({modules:['software_updates','expanded_agent','private-support','manual-payroll'],...feedTerms});
+ const code=x.fx.mint({modules:['software_updates','private-support','manual-payroll'],...feedTerms});
  const body={code};
  const raw=value=>request(mainUrl,route,{session:owner,body:value});
  const preview=(value=body)=>raw({...value,code:x.encrypt(value.code)});
@@ -204,7 +204,7 @@ test('paid preflight is signed, owner/terms/CSRF scoped, and cannot mutate activ
  assert.equal((await request(workerUrl,route,{session:worker,body})).status,404);
  assert.equal((await request(mainUrl,route,{session:owner})).status,404);
  assert.deepEqual((await preview()).result,{edition,installationId:x.fx.id,status:'active',expiresAt:second+60,notBefore:null,
-  entitlements:[{id:'software_updates',requiresPaidBuild:true},{id:'expanded_agent',requiresPaidBuild:true},{id:'private-support',requiresPaidBuild:false}],updateFeed});
+  entitlements:[{id:'software_updates',requiresPaidBuild:true},{id:'private-support',requiresPaidBuild:false}],updateFeed});
  assert.equal((await preview({...body,code:x.fx.mint({installationId:'a'.repeat(64)})})).status,400);
  assert.equal((await preview({...body,code:x.fx.mint({modules:['future-unknown']})})).status,400);
  assert.equal((await preview({...body,code:x.fx.mint({expiresAt:second})})).result.status,'expired');
@@ -260,9 +260,9 @@ test('owner reviews an uploaded license through the browser without enabling pai
  await upload(x.fx.mint({...terms,modules:['software_updates'],expiresAt:second}));await review();await page.getByRole('heading',{name:'Paid upgrade review'}).waitFor();
  await page.getByText(/Issuer-approved update source/).waitFor();await page.getByText(updateFeed.origin,{exact:true}).waitFor();
  await page.getByText('License status: expired.').waitFor();await page.getByText('Software updates',{exact:true}).waitFor();await b('Close').click();
- await open();await upload(x.fx.mint({...terms,modules:['software_updates','expanded_agent','private-support'],expiresAt:second+60}));await review();
+ await open();await upload(x.fx.mint({...terms,modules:['software_updates','private-support'],expiresAt:second+60}));await review();
  await page.getByText('License status: active.').waitFor();await page.getByText(x.fx.id,{exact:true}).last().waitFor();
- assert.equal(await page.getByText('Requires paid build',{exact:true}).count(),2);
+ assert.equal(await page.getByText('Requires paid build',{exact:true}).count(),1);
  await b('Close').click();await page.getByText('Activation status: not activated.').waitFor();
  assert.ok(requests.every(url=>url.startsWith(mainUrl)));assert.deepEqual(errors,[]);
  await assert.rejects(readFile(join(x.fx.options.directory,'active-entitlement.fqlicense')),{code:'ENOENT'});

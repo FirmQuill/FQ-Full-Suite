@@ -1,5 +1,5 @@
 import {esc,btn,panel,table} from '/shared/views.mjs';
-const names={'private-support':'Private support documentation',expanded_agent:'Expanded agent tools',software_updates:'Software updates'};
+const names={'private-support':'Private support documentation',software_updates:'Software updates'};
 const when=n=>new Date(n*1000).toISOString().replace('.000Z',' UTC');
 export function activationPanel(data){
   if(!data)return panel('Module activation','<p>Loading module status…</p>');

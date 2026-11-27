@@ -1,4 +1,4 @@
-# FirmQuill Full Suite verification
+# Historical FirmQuill Full Suite verification
 
 Version 0.4.0-preview.1, locally verified on Windows on November 26, 2026 using Node 24.22.3 and Microsoft Edge 158.0.4370.33.
 
