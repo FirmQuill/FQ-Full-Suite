@@ -1,3 +1,4 @@
+import {INSTALLED_VERSION} from './support.mjs';
 import {createServer} from 'node:http';
 import {randomBytes,randomUUID,timingSafeEqual} from 'node:crypto';
 import {readFile,lstat,mkdir,open,link,unlink} from 'node:fs/promises';
@@ -23,7 +24,7 @@ export async function createSetupWizard({destination,port=0}){
     try{
       fail(req.headers.host===new URL(origin).host,'Unknown setup host.',403);const path=new URL(req.url,origin).pathname;
       if(['/', '/setup.mjs','/setup.css'].includes(path)&&req.method==='GET'){
-        const name=path==='/'?'index.html':path.slice(1),body=await readFile(new URL('./web/setup/'+name,import.meta.url));res.writeHead(200,{'Content-Type':name.endsWith('.mjs')?'text/javascript':name.endsWith('.css')?'text/css':'text/html'});res.end(body);return;
+        const name=path==='/'?'index.html':path.slice(1),raw=await readFile(new URL('./web/setup/'+name,import.meta.url)),body=path==='/'?raw.toString('utf8').replace('__FQ_INSTALLED_VERSION__',INSTALLED_VERSION):raw;res.writeHead(200,{'Content-Type':name.endsWith('.mjs')?'text/javascript':name.endsWith('.css')?'text/css':'text/html'});res.end(body);return;
       }
       const supplied=req.headers['x-setup-token'];fail(typeof supplied==='string'&&/^[A-Za-z0-9_-]+$/.test(supplied)&&supplied.length===secret.length&&timingSafeEqual(Buffer.from(supplied),Buffer.from(secret)),'Open the private setup link printed by this host.',403);
       fail(req.method==='POST'&&req.headers.origin===origin,'Use this setup page on its own host.',403);

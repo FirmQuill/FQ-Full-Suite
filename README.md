@@ -14,6 +14,8 @@ The reusable full customer manual is delivered separately for migration or suppo
 
 See [multi-line commercial documents](COMMERCE-LINES.md) and [reviewed migration formats](MIGRATION-FORMATS.md). The native QuickBooks Desktop IIF profile accepts a flat customer or vendor list only. Generic multi-line service CSV mappings and fictional fixtures do not establish native QuickBooks Online, Wave or ADP export-schema compatibility. The existing verified bank templates are retained. The built-in federal tax worksheet remains an estimate; the separate manual payroll workflow finalizes company-entered calculations but does not generate tax filings or payment instructions. The companion Lite upgrade remains single-operator. Payroll research is unchanged.
 
+See [month-end close](MONTH-END-CLOSE.md) for dated close preparation, authorized sign-off, period locks and downloadable packets.
+
 ## Manual payroll
 
 In **Payroll**, an owner or an assigned payroll-role user with the Payroll area can define dated company rules and draft a pay run. The app supports a manually entered gross amount or approved time in the chosen period at recorded pay rates. Company rules start with gross wages and can apply a rate, flat amount or progressive pay-period brackets, with optional work location limits and period/calendar-year wage caps. Opening taxable wages support midyear setup. No statutory rules, overtime calculation, pre-tax benefits, filing forms or money movement are inferred.

@@ -2,6 +2,7 @@ import {companyKnowledgeView,companyKnowledgeCommand} from './company-knowledge.
 import {createPrivateFtps} from './ftps.mjs';
 import {initializeCollaborationGroups,groupAdminView,groupAdminCommand} from './collaboration-groups.mjs';
 import {initializeMessaging,messagingView,messagingCommand,latestMessageId} from './messaging.mjs';
+import {initializeMonthEndClose,canSeeMonthEnd,monthEndView,monthEndCommand,monthEndPacket} from './month-end-close.mjs';
 import {catchUpPlanning,localPlanningDay,planningCommand,planningOf,planningSummary} from './shared/planning-core.mjs';
 import {initializeManualPayroll,manualPayrollView,manualPayrollStoreCommand,manualPayrollPortableState} from './manual-payroll-store.mjs';
 import {portableDeskState,portableDeskReport} from './portable-desk.mjs';
@@ -32,7 +33,7 @@ const token=()=>randomBytes(32).toString('base64url');
 const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
 const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs']);
-const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','company-knowledge.mjs','private-ftps-ui.mjs','audit.html']);
+const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','month-end-close.mjs','company-knowledge.mjs','private-ftps-ui.mjs','audit.html']);
 const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
@@ -49,6 +50,7 @@ function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHead
 async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},ftpsOptions={},ftpsTransport,driveFactory,planningClock=localPlanningDay,planningIntervalMs=60_000}){
   const db=openStore(database),sessions=new Map(),attempts=new Map();
   initializeTeamWorkflows(db);
+  initializeMonthEndClose(db);
   initializeCollaborationGroups(db);
   initializeMessaging(db);
   initializeManualPayroll(db);
@@ -76,13 +78,13 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     session.until=Date.now()+30*60000;return u;
   }
   function workspacePagesFor(user,state){
-    if(user.role==='owner')return ['Departments','Project tracker','Assets & pallets','Inventory audit','Company knowledge','Messages','Collaboration groups',...teamPages(db,user)];
+    if(user.role==='owner')return ['Departments','Project tracker','Assets & pallets','Inventory audit','Company knowledge','Messages','Collaboration groups','Month-end close',...teamPages(db,user)];
     const pages=[],departments=departmentView(db,user,state),projects=projectView(db,user,state);
     if(departments.workspaces.length)pages.push('Departments');
     if(projects.projects.length||departments.workspaces.some(w=>w.rights.includes('manage')))pages.push('Project tracker');
     const rights=new Set();for(const c of state.companies){try{for(const right of assetsView(db,user,state,{companyId:c.id}).rights)rights.add(right);}catch{}}if(['view','manage'].some(r=>rights.has(r)))pages.push('Assets & pallets');
     if(['audit','approve'].some(r=>rights.has(r)))pages.push('Inventory audit');
-    return [...pages,...(user.assignments.length&&accountAreas(db,user).includes('Company knowledge')?['Company knowledge']:[]),...teamPages(db,user),...(accountAreas(db,user).includes('Messages')&&state.companies.some(c=>user.assignments.includes(c.id))?['Messages']:[])];
+    return [...pages,...(canSeeMonthEnd(db,user,state)?['Month-end close']:[]),...(user.assignments.length&&accountAreas(db,user).includes('Company knowledge')?['Company knowledge']:[]),...teamPages(db,user),...(accountAreas(db,user).includes('Messages')&&state.companies.some(c=>user.assignments.includes(c.id))?['Messages']:[])];
   }
   function snapshot(user,s,extras={}){
     if(!hasAccepted(user))return {termsRequired:termsVersion,csrf:s.csrf};
@@ -208,6 +210,21 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(path==='/api/support/search'&&!post){send(res,200,await support.search(url.searchParams.get('q')||''));return;}
         if(path==='/api/support/article'&&!post){send(res,200,await support.article(url.searchParams.get('id')));return;}
         if(path==='/api/support/answer'&&post){const p=await jsonBody(req,4096);send(res,200,await support.answer(p.question));return;}
+        if(portal==='main'&&['/api/month-end-close','/api/month-end-close/packet'].includes(path)){
+          const companyId=url.searchParams.get('companyId')||'',period=url.searchParams.get('period')||undefined;
+          if(!post){
+            send(res,200,path.endsWith('/packet')?monthEndPacket(db,u,{companyId,...readBooks(db)},period):monthEndView(db,u,{companyId,...readBooks(db)},period));return;
+          }
+          requireThat(path==='/api/month-end-close',405,'Method unavailable.');
+          const p=await jsonBody(req,12*1024);
+          requireThat(sessions.get(sid)===s,401,'Sign in again.');
+          const out=tx(db,()=>{
+            const active=userFor(s,portal);
+            requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
+            return monthEndCommand(db,active,{companyId,...readBooks(db)},p.action);
+          });
+          send(res,200,out);return;
+        }
         if(portal==='main'&&path==='/api/planning'){
           owner(u);
           if(post){

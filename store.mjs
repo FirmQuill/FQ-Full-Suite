@@ -141,11 +141,14 @@ function authorizeAction(user,state,companyId,a){
   if(['settings','close','approve time'].includes(a.type))manager(user);
 }
 const directBookkeeper=new Set(['contact','item','job','time','quote','sales order','purchase order','attachment']);
-function actionFor(db,user,payload){
+function actionFor(db,user,payload,{monthEnd=false}={}){
   const {state,revision}=readBooks(db),{companyId,action}=payload;
   authorizeAction(user,state,companyId,action);
   requireActionArea(db,user,action);
   authorizeProjectAction(db,user,state,companyId,action);
+  if(action.type==='close'&&!monthEnd&&db.prepare("SELECT 1 FROM sqlite_master WHERE name='month_end_close' AND type='table'").get()){
+    requireThat(!db.prepare("SELECT 1 FROM month_end_close WHERE company=? AND status='prepared' AND cutoff<=?").get(companyId,action.date),409,'A prepared close exists. Review and sign it in Month-end close, or formally withdraw that preparation before using legacy period close.');
+  }
   const signature=createHash('sha256').update(JSON.stringify([companyId,action])).digest('hex');
   const old=db.prepare('SELECT * FROM requests WHERE actor=? AND requestId=?').get(user.id,action.requestId);
   if(old){requireThat(old.fingerprint===signature,409,'That request ID belongs to a different operation.');return old.approval?{pendingApproval:old.approval}:{};}

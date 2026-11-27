@@ -1,0 +1,22 @@
+# Month-end close · FirmQuill Full Suite
+
+This private development feature prepares a company-by-company monthly financial review and seals a dated packet after authorized sign-off. It works on the same company books and period lock as Accounting; it does not send filings, settle payments, close employee payroll, or replace the accountant's review.
+
+## Prepare and review
+
+1. Open the main ERP portal and select the intended company. Open **Month-end close → Choose month** for a completed month. The workspace defaults to the prior month in the host's local time. It can display unfinished months for review without preparing or closing them.
+2. Review the trial balance and financial statements. The trial/balance sheet use postings through the last day; earnings and cash flow use the selected month's movement. Invoice/bill balances include only recorded settlements and credits dated no later than the cutoff. Open receivables or payables aren't inherently errors; investigate negative open items or ledger differences.
+3. Review the latest saved bank reconciliation through the cutoff, unmatched statement lines and unmatched cash ledger entries. A current match is shown only if both records are dated through the cutoff; the existing books do not retain the effective date of each current match. Only reconciliations dated through cutoff count as reconciled. No imported lines does not mean that a bank balance has been independently confirmed.
+4. Review pending financial approvals through the selected day in **Held financial approvals**. The workspace shows only operational type/date/reference, not submitted details or unrelated employee requests. Use the authorized **Approvals** workflow to inspect and decide them.
+5. Click **Prepare close**. Enter the evidence examined and explain exceptions that the reviewer should investigate. Saving does not post or lock anything. If balances or holds change before sign-off, use **Prepare again** after reviewing the changes. The original cutoff snapshot is rerun on preparation and sign-off; unrelated later transactions do not stale the snapshot.
+
+An owner, manager or bookkeeper can prepare only if authorized for this company and all relevant finance areas (Accounting, Banking, Reports, Sales, Purchasing, Approvals), with full access to protected projects. The feature does not appear in the employee portal. Non-owner staff with only partial financial/project visibility cannot use it or fetch the packet.
+
+## Sign and lock
+
+1. An authorized owner or manager opens the prepared month. Resolve the trial-balance difference or pending financial approvals before sign-off. Reprepare if the relevant review changed. For remaining cash, bank or receivable/payable exceptions, document the review and any accepted reasons. A later close may not skip an earlier prepared month.
+2. Click **Sign and lock period**. Confirm that the dated statements, balances and reconciliation were reviewed, enter the sign-off notes, and submit. The workflow uses the existing Accounting period-lock control and logs the prep/sign identities, digest and whether the signer was the preparer. Use a separate signer where your organization requires one; an authorized one-operator business may do both. An authorized preparer/manager may formally withdraw an unsigned review with a reason.
+3. Verify **Signed and locked** and the cutoff. Save the printable **HTML** and/or structured **JSON** packet to company-controlled storage. The HTML opens offline and can be printed/saved to PDF from a browser. It escapes all captured text and does not call a network. The packet contains the frozen snapshot and sign-off metadata; it is not a digital signature or a statutory audit opinion.
+4. A period locked using old **Accounting → Close period** is shown as already locked, with no synthetic historical sign-off packet. That shortcut cannot bypass a currently prepared review. There is no reopening UI. Current posting guard does not alter standalone HR, collaboration, and non-posting systems.
+
+Protect signed HTML/JSON files: they can include confidential names and financial amounts. They are stored with the Full Suite database, not in a portable Lite-format books export. Use the protected full database backup process for recovery. The close packet has a 12 MiB detail cap. No filing, intercompany consolidated signoff, month-end adjusting automation, inventory valuation or opening bank-statement reconstruction is provided as a separate control.
