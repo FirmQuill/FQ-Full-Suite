@@ -16,6 +16,12 @@ See [multi-line commercial documents](COMMERCE-LINES.md) and [reviewed migration
 
 See [month-end close](MONTH-END-CLOSE.md) for dated close preparation, authorized sign-off, period locks and downloadable packets.
 
+See [managed encrypted backups](MANAGED-BACKUPS.md) for optional daily and before-approved-write server archives. Both triggers are off by default.
+
+## Download local support diagnostics
+
+In the main portal, owners can open **Setup help → Local support diagnostics → Preview diagnostics**. The JSON download contains only installed application, Node and SQLite versions, a recognized schema version, and coded checks for expected schema parts. The preview is exactly what will be downloaded. It excludes application records, identities, logs, host paths and secrets, does not test external services or backup status, and is never sent or uploaded automatically.
+
 ## Manual payroll
 
 In **Payroll**, an owner or an assigned payroll-role user with the Payroll area can define dated company rules and draft a pay run. The app supports a manually entered gross amount or approved time in the chosen period at recorded pay rates. Company rules start with gross wages and can apply a rate, flat amount or progressive pay-period brackets, with optional work location limits and period/calendar-year wage caps. Opening taxable wages support midyear setup. No statutory rules, overtime calculation, pre-tax benefits, filing forms or money movement are inferred.
@@ -54,3 +60,34 @@ drive reserves headroom on writes but does not prevent growth elsewhere in the
 application. Deletion does not erase old backups or all retained storage copies.
 
 Optional: see [Private FTPS file transfer](FTPS-SETUP.md) to configure manual file copies to and from an organization-controlled explicit-TLS FTP server.
+
+### Report builder
+
+From the main portal, select a company and open **Report builder** (Reports
+permission required). Configure a single-company packet from the posted ledger:
+Balance sheet, Income statement, Cash flow and Trial balance. Pick sections and
+their order, dates, account detail and applicable trial balance columns or class
+filter. Review the preview first, then print it or choose **Save as PDF** in your
+browser's print dialog. The CSV uses the same displayed values in decimal USD.
+No report is automatically sent. Always check dates, completeness and the
+recipient's requirements before sharing.
+
+Templates are private to the account and company that created them. A template
+stores names and report settings, never amounts or copies of ledger records.
+The current ledger and permissions are checked again immediately before manual
+export. Scoped project accounts see **Partial report** in the preview, PDF and
+CSV; these results are not full-company figures. Filtered trial balance totals
+are not whole-ledger totals. Cash flow covers only the operating cash account
+and labels any unclassified movement. The builder does not include journals,
+payroll, identifiers from source records, lender-specific form submission,
+multi-company consolidation or certifications. The standard Reports screen
+remains available for ordinary consolidated accounting reports.
+
+### Busy sign-in periods
+When several people sign in at once, local password sign-ins may wait briefly
+instead of failing immediately. The wait is bounded; a busy message means the
+user should pause briefly and try again, not refresh repeatedly. Company and
+worker portal sign-ins share the same host's capacity. Single sign-on, identity
+provider settings, the existing sign-in attempt limits, and ordinary workspace
+permissions are unchanged. Check this on the intended hardware before relying
+on it for a shift change.

@@ -144,7 +144,35 @@ export function nextSteps(c,p){
   }
   return [];
 }
+export const agingBuckets=[['current','Current or due today'],['d1-30','1–30 days overdue'],['d31-60','31–60 days overdue'],['d61-90','61–90 days overdue'],['d91+','91+ days overdue'],['unknown','Due date unknown']];
+export function agingSnapshot(company,through){
+  date(through);
+  const types={collection:'invoice','sales credit':'invoice',payment:'bill','vendor credit':'bill'};
+  const parentKind=new Map(company.docs.filter(d=>d.kind==='invoice'||d.kind==='bill').map(d=>[d.id,d.kind]));
+  const applied=new Map();
+  for(const d of company.docs)if(d.date<=through&&Object.hasOwn(types,d.kind)&&parentKind.get(d.parent)===types[d.kind]){
+    applied.set(d.parent,sum([applied.get(d.parent)??0,d.applied]));
+  }
+  const result=Object.fromEntries(['invoice','bill'].map(kind=>[kind,{rows:[],buckets:Object.fromEntries(agingBuckets.map(([key])=>[key,0])),total:0}]));
+  const midnight=value=>Date.parse(value+'T00:00:00Z');
+  const cutoff=midnight(through);
+  for(const d of company.docs){
+    if(!Object.hasOwn(result,d.kind)||d.date>through)continue;
+    const open=sum([d.total,-(applied.get(d.id)??0)]);if(open<=0)continue;
+    const days=d.dueDate===undefined?null:(cutoff-midnight(d.dueDate))/86400000;
+    const bucket=days===null?'unknown':days<=0?'current':days<=30?'d1-30':days<=60?'d31-60':days<=90?'d61-90':'d91+';
+    const report=result[d.kind];
+    report.buckets[bucket]=sum([report.buckets[bucket],open]);report.total=sum([report.total,open]);
+    report.rows.push({id:d.id,number:d.number,party:d.party,date:d.date,dueDate:d.dueDate??null,days,bucket,open});
+  }
+  for(const report of Object.values(result))report.rows.sort((a,b)=>(a.dueDate??'9999-99-99').localeCompare(b.dueDate??'9999-99-99')||a.number-b.number);
+  return result;
+}
 function commerce(c,a,e){
+  if(a.dueDate!==undefined){
+    check(a.type==='invoice'||a.type==='bill','Only an invoice or bill can have a due date.');
+    e.dueDate=date(a.dueDate);
+  }
   const source=a.parent?byId(c.docs,a.parent):null;
   if(['quote','purchase order'].includes(a.type))check(!source,'New commercial documents do not have a source.');
   if(source?.lines||(!source&&['quote','purchase order'].includes(a.type)&&Object.hasOwn(a,'lines'))){
@@ -366,9 +394,9 @@ export function validateState(s){
     for(const i of c.items){name(i.name);check(['Product','Service'].includes(i.kind),'Invalid item type.');}
     for(const j of c.jobs)name(j.name);
     for(const p of c.employees){name(p.name);name(p.locality);positive(p.rate);check(/^[A-Z]{2}$/.test(p.state),'Invalid work state.');}
-    for(const d of c.docs){check(commerceKinds.includes(d.kind),'Invalid document type.');date(d.date);}
+    for(const d of c.docs){check(commerceKinds.includes(d.kind),'Invalid document type.');date(d.date);if(d.dueDate!==undefined){check(d.kind==='invoice'||d.kind==='bill','Invalid commercial due date.');date(d.dueDate);}}
     const recordedHistory=new Map(c.history.map(e=>[e.id,e])),docIds=new Map(c.docs.map(d=>[d.id,d])),priorChildren=new Map();
-    for(const d of c.docs){const recorded=recordedHistory.get(d.id);check(recorded,'Commercial history is missing.');byId(c.items,d.item);byId(c.parties,d.party);if(d.parent)byId(c.docs,d.parent);if(d.job)byId(c.jobs,d.job);positive(d.qty);integer(d.total);
+    for(const d of c.docs){const recorded=recordedHistory.get(d.id);check(recorded,'Commercial history is missing.');check(recorded.dueDate===d.dueDate,'Commercial due date differs from posting history.');byId(c.items,d.item);byId(c.parties,d.party);if(d.parent)byId(c.docs,d.parent);if(d.job)byId(c.jobs,d.job);positive(d.qty);integer(d.total);
       if(Object.hasOwn(d,'lines')){
         check(Array.isArray(d.lines)&&d.lines.length>0&&d.lines.length<=100&&new Set(d.lines.map(l=>l.lineId)).size===d.lines.length,'Invalid commercial lines.');
         for(const l of d.lines){check(/^L[1-9]\d{0,2}$/.test(l.lineId),'Invalid commercial line ID.');byId(c.items,l.item);name(l.location);positive(l.qty);positive(l.unit);check(integer(l.discount)>=0&&l.discount<=lineMoney(l.qty,l.unit)&&l.total===lineMoney(l.qty,l.unit)-l.discount,'Commercial line total does not balance.');if(l.cost!==undefined)check(integer(l.cost)>=0,'Invalid line cost.');}

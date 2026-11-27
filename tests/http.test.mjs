@@ -38,7 +38,7 @@ async function fixture(t){
   t.after(async()=>{await suite.close();await rm(dir,{recursive:true,force:true});});
   return {dir,database,state,suite,ids};
 }
-test('pinned Lite baseline plus explicit shared commerce and bank overlays, company reports, consolidation and federal preview parity',async t=>{
+test('pinned Lite baseline plus explicit shared commerce, bank, and aging overlays, company reports, consolidation and federal preview parity',async t=>{
   const baseline=await readFile(new URL('../baseline/LITE-SHA256SUMS.txt',import.meta.url),'utf8');
   const overlayText=await readFile(new URL('../baseline/LITE-COMMERCE-OVERLAY-SHA256SUMS.txt',import.meta.url),'utf8');
   const pairs=overlayText.trim().split(/\r?\n/).map(line=>{const [hash,path]=line.split('  ');assert.match(hash,/^[a-f0-9]{64}$/);return [path,hash];});
@@ -47,9 +47,12 @@ test('pinned Lite baseline plus explicit shared commerce and bank overlays, comp
   const bankText=await readFile(new URL('../baseline/LITE-BANK-OVERLAY-SHA256SUMS.txt',import.meta.url),'utf8');
   const bank=new Map(bankText.trim().split(/\r?\n/).map(line=>{const [hash,path]=line.split('  ');assert.match(hash,/^[a-f0-9]{64}$/);return [path,hash];}));
   assert.deepEqual([...bank.keys()].sort(),['core.mjs','interop.mjs']);
+  const agingText=await readFile(new URL('../baseline/LITE-AGING-OVERLAY-SHA256SUMS.txt',import.meta.url),'utf8');
+  const aging=new Map(agingText.trim().split(/\r?\n/).map(line=>{const [hash,path]=line.split('  ');assert.match(hash,/^[a-f0-9]{64}$/);return [path,hash];}));
+  assert.deepEqual([...aging.keys()].sort(),['core.mjs','views.mjs']);
   for(const line of baseline.trim().split(/\r?\n/)){
     const [hash,path]=line.split('  ');if(!path.startsWith('dist/'))continue;
-    const bytes=await readFile(new URL('../shared/'+path.slice(5),import.meta.url));assert.equal(createHash('sha256').update(bytes).digest('hex'),bank.get(path.slice(5))||overlay.get(path.slice(5))||hash,path);
+    const bytes=await readFile(new URL('../shared/'+path.slice(5),import.meta.url));assert.equal(createHash('sha256').update(bytes).digest('hex'),aging.get(path.slice(5))||bank.get(path.slice(5))||overlay.get(path.slice(5))||hash,path);
   }
   const {state,suite}=await fixture(t),owner=await client(suite.mainUrl,'owner'),full=owner.login.data.state;
   assert.deepEqual(full,state);

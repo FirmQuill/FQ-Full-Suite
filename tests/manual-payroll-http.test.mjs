@@ -1,3 +1,4 @@
+import {activationFixture} from './fixture-activation.mjs';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import {mkdtemp,rm} from 'node:fs/promises';
@@ -49,9 +50,10 @@ async function fixture(t){
      assert.equal(projectErpState(db,u,{...state,companies:[synthetic]}).companies[0].manualPayroll,undefined);
    }
  });}finally{db.close();}
- let suite=await createSuite({database,mainPort:0,workerPort:0});
+ const {options:activationOptions}=await activationFixture(dir,{activate:['manual-payroll']});
+ let suite=await createSuite({database,mainPort:0,workerPort:0,activationOptions});
  t.after(async()=>{await suite.close();await rm(dir,{recursive:true,force:true});});
- return {database,get suite(){return suite;},async restart(){await suite.close();suite=await createSuite({database,mainPort:0,workerPort:0});},c,other,employee,state};
+ return {database,get suite(){return suite;},async restart(){await suite.close();suite=await createSuite({database,mainPort:0,workerPort:0,activationOptions});},c,other,employee,state};
 }
 test('manual payroll HTTP: scoped rules, approved time, exactly-once publication, restart and encrypted owner export',async t=>{
  const x=await fixture(t),portal=x.suite;

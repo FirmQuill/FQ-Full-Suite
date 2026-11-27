@@ -79,7 +79,22 @@ export function createAgentService({db}){
     apply(state,grant.company,clean); // Existing business validation; no books are written.
     return clean;
   }
-  function command(user,p){
+  function approvalFor(p){
+    keys(p,['type','id','decision','revision']);
+    fail(text(p.id,80),400,'Select an agent proposal.');
+    fail(['approve','reject'].includes(p.decision),400,'Choose approve or reject.');
+    const proposal=db.prepare('SELECT * FROM agent_proposals WHERE id=?').get(p.id);
+    fail(proposal,404,'Agent proposal is unavailable.');
+    fail(proposal.status==='pending',409,'This proposal has already been decided.');
+    const {state,revision}=readBooks(db);revisionCheck(revision,p.revision);
+    if(p.decision!=='approve')return {proposal,revision};
+    const grant=liveGrant(db.prepare('SELECT * FROM agent_grants WHERE id=?').get(proposal.grant_id));
+    const action=JSON.parse(proposal.action);
+    validateProposal(grant,{companyId:proposal.company,requestId:proposal.request_id,revision:proposal.base_revision,action},state,revision);
+    return {proposal,revision,action};
+  }
+  function preflightApproval(user,p){principal(user);approvalFor(p);}
+  function command(user,p,{preWrite}={}){
     const active=principal(user);
     fail(object(p),400,'Invalid agent administration request.');
     return tx(db,()=>{
@@ -105,17 +120,9 @@ export function createAgentService({db}){
         audit(db,active,row.company,'agent grant revoked',JSON.stringify({grantId:row.id}));return {ok:true};
       }
       if(p.type==='decide'){
-        keys(p,['type','id','decision','revision']);
-        fail(text(p.id,80),400,'Select an agent proposal.');
-        fail(['approve','reject'].includes(p.decision),400,'Choose approve or reject.');
-        const proposal=db.prepare('SELECT * FROM agent_proposals WHERE id=?').get(p.id);
-        fail(proposal,404,'Agent proposal is unavailable.');
-        fail(proposal.status==='pending',409,'This proposal has already been decided.');
-        const {state,revision}=readBooks(db);revisionCheck(revision,p.revision);
+        const {proposal,revision,action}=approvalFor(p);
         if(p.decision==='approve'){
-          const grant=liveGrant(db.prepare('SELECT * FROM agent_grants WHERE id=?').get(proposal.grant_id));
-          const action=JSON.parse(proposal.action);
-          validateProposal(grant,{companyId:proposal.company,requestId:proposal.request_id,revision:proposal.base_revision,action},state,revision);
+          preWrite?.();
           actionFor(db,active,{companyId:proposal.company,revision,action:{...action,requestId:'agent_'+proposal.id}});
         }
         const status=p.decision==='approve'?'approved':'rejected';
@@ -169,5 +176,5 @@ export function createAgentService({db}){
     }
     fail(false,404,'Agent endpoint unavailable.');
   }
-  return {view,command,request};
+  return {view,command,request,preflightApproval};
 }

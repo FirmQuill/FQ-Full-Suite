@@ -1,4 +1,4 @@
-import {accounts,balance,position,statements,consolidate,jobSummary,dollars,outstanding,nextSteps,sum,documentLines,cents,check} from './core.mjs';
+import {accounts,balance,position,statements,consolidate,jobSummary,dollars,outstanding,nextSteps,sum,agingBuckets,agingSnapshot,documentLines,cents,check} from './core.mjs';
 
 const esc=x=>String(x??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 const btn=(action,label,key='',cls='')=>`<button type="button" class="${esc(cls)}" data-act="${esc(action)}" data-key="${esc(key)}">${esc(label)}</button>`;
@@ -93,6 +93,16 @@ function banks(c){
   return panel('Operating account',table(['Date','Description','Amount','Matched entry'],c.bank.map(r=>[r.date,esc(r.description),money(r.amountCents),r.match?recordBtn(ref(c,c.entries.find(e=>e.id===r.match).source)):btn('match','Match',r.id)])),btn('import','Import CSV','','primary')+btn('export','Export CSV'))+
   panel('Reconciled statements',table(['Through','Opening','Statement close','Outstanding cash','Book cash','Matched lines'],c.reconciliations.map(r=>[r.date,money(r.opening),money(r.closing),money(r.outstandingCash),money(r.bookCash),r.rows.length])),btn('reconcile','Reconcile statement'));}
 const line=(label,n)=>`<div class="reportline"><span>${esc(label)}</span><b>${money(n)}</b></div>`;
+function agingTables(c,through){
+  const snapshot=agingSnapshot(c,through);
+  return ['invoice','bill'].map(kind=>{
+    const result=snapshot[kind],labels=new Map(agingBuckets);
+    return panel(kind==='invoice'?'Receivables aging':'Payables aging',
+      '<p class="quiet">Open as of '+esc(through)+'. Uses recorded due dates only. The From date does not limit this snapshot.</p>'+
+      table(['Status by due date','Open amount'],[...agingBuckets.map(([k,v])=>[esc(v),money(result.buckets[k])]),['Total open',money(result.total)]])+
+      table(['Record','Contact','Posted','Due date','Aging','Open amount'],result.rows.map(d=>[recordBtn(d),esc(title(c.parties,d.party)),esc(d.date),esc(d.dueDate??'Unknown'),esc(labels.get(d.bucket)),money(d.open)]),'No outstanding balances at this cutoff.'));
+  }).join('');
+}
 function reportView(c,s,filter){
   const {from,through,group}=filter;
   const g=group?consolidate(s,group,from,through):null,r=g?.report||statements(c.entries,from,through);
@@ -100,6 +110,7 @@ function reportView(c,s,filter){
   return filters+(g?panel('Company comparison',table(['Company','Cash','Assets','Net income'],g.members.map(m=>[esc(m.name),money(m.report.closingCash),money(m.report.assets),money(m.report.income)]))):'')+
     `<div class="reports">${panel('Balance sheet',line('Assets',r.assets)+line('Liabilities',r.liabilities)+line('Contributed capital',r.capital)+line('Cumulative earnings',r.earnings))}${panel('Income statement',line('Revenue',r.revenue)+line('Expenses',r.expenses)+line('Net income',r.income))}${panel('Cash flow',line('Opening cash',r.openingCash)+Object.entries(r.cashFlow).map(([k,v])=>line(k,v)).join('')+line('Closing cash',r.closingCash))}${panel('Trial balance',table(['Account','Debit','Credit'],Object.entries(r.balances).filter(([,n])=>n).map(([a,n])=>[esc(accounts[a][0]),money(Math.max(0,n)),money(Math.max(0,-n))]))+line('Difference',r.trialDifference))}</div>`+
     (g?panel('Group-only elimination journals',table(['Company','Date','Pair','Entry'],g.eliminations.map(e=>[esc(title(s.companies,e.company)),e.date,esc(e.pair),e.lines.map(l=>l.account+' '+money(l.cents)).join('<br>')]))):'')+
+    (g?'':agingTables(c,through))+
     panel('Reporting groups',table(['Name','Companies'],s.groups.map(g=>[esc(g.name),g.members.map(k=>esc(title(s.companies,k))).join(', ')])),btn('group','New group')+btn('intercompany','Intercompany charge'));
 }
 function payrollView(c){

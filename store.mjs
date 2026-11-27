@@ -1,3 +1,4 @@
+import {initializeCsvRecovery,recordCsvReceipt} from './csv-recovery.mjs';
 import {initializeCompanyKnowledge} from './company-knowledge.mjs';
 import {validatePlanning} from './shared/planning-core.mjs';
 import {migrateOwnerDesk} from './desk-migration.mjs';
@@ -46,6 +47,7 @@ function openStore(filename){
       initializeDepartments(db);
       initializeProjects(db);
       initializeAssets(db);
+      initializeCsvRecovery(db);
       migrateOwnerDesk(db,readBooks(db).state);
       ensureWorkerAccounts(db,readBooks(db).state);
       db.exec('PRAGMA user_version=2');
@@ -161,7 +163,7 @@ function actionFor(db,user,payload,{monthEnd=false}={}){
     db.prepare('UPDATE books SET revision=revision+1').run();
     audit(db,user,companyId,'submitted',action.type+' · '+approval);
   }else{
-    saveBooks(db,next);audit(db,user,companyId||next.companies[0].id,'posted',action.type+' · '+action.requestId);
+    saveBooks(db,next);recordCsvReceipt(db,state,next,companyId,action,user);audit(db,user,companyId||next.companies[0].id,'posted',action.type+' · '+action.requestId);
     if(action.type==='intercompany')audit(db,user,action.other,'posted','Incoming intercompany charge · '+action.requestId);
   }
   db.prepare('INSERT INTO requests VALUES(?,?,?,?)').run(user.id,action.requestId,signature,approval);
@@ -189,7 +191,7 @@ function decide(db,user,p){
   requireThat(r.status==='pending'&&r.requestedBy!==user.id,409,'Approval already decided or requested by this user.');
   requireActionArea(db,user,JSON.parse(r.action));
   authorizeProjectAction(db,user,state,r.companyId,JSON.parse(r.action));
-  if(p.decision==='approve')saveBooks(db,apply(state,r.companyId,JSON.parse(r.action)));
+  if(p.decision==='approve'){const action=JSON.parse(r.action),next=apply(state,r.companyId,action);saveBooks(db,next);recordCsvReceipt(db,state,next,r.companyId,action,user);}
   else db.prepare('UPDATE books SET revision=revision+1').run();
   db.prepare('UPDATE approvals SET status=? WHERE id=?').run(p.decision==='approve'?'approved':'rejected',r.id);
   audit(db,user,r.companyId,p.decision,r.kind+' · '+r.id);

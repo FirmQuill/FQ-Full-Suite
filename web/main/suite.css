@@ -8,3 +8,21 @@
 pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:55vh;overflow:auto;font-size:.82rem}
 @media(max-width:730px){.toolbar .toolgroup{gap:.3rem}.toolbar button{padding:.45rem .6rem}.toolbar .picker{max-width:35vw}.shell aside nav button{min-height:40px}}
 .project-board{margin:1rem 0}.project-board summary{cursor:pointer;font-weight:650}.project-columns{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.7rem;margin-top:.7rem}.project-lane{padding:.65rem;background:#eef4f2;border-radius:.5rem;min-width:0}.project-lane h3{margin-top:0;font-size:1rem}.project-ticket{background:#fff;padding:.55rem;margin:.5rem 0;border-radius:.35rem;overflow-wrap:anywhere}.project-ticket p{margin:.2rem 0}.project-ticket button{margin:.2rem 0 0}@media(max-width:600px){.project-columns{grid-template-columns:1fr}}
+
+/* Report builder: the named print action reveals only the approved preview. */
+.packet-settings{display:grid;gap:1rem;min-width:0}
+.packet-settings .packet-item{display:flex;gap:.45rem;align-items:center;margin:.3rem 0}
+.packet-settings .packet-item label{min-width:min(17rem,60%)}
+.packet-settings .packet-templates{display:flex;gap:.55rem;flex-wrap:wrap;align-items:end}
+.packet-export{display:flex;gap:.6rem;flex-wrap:wrap;margin:.5rem 0}
+.packet-printable{color:#183c3f;background:#fff;padding:1rem;border:1px solid #c8d7d7}
+.packet-printable .packet-amount{text-align:right;font-variant-numeric:tabular-nums}
+.packet-printable .packet-total{font-weight:bold}
+@media print{
+  body.printing-report-packet #app,body.printing-report-packet #app .shell,body.printing-report-packet #app .maincol,body.printing-report-packet #app .workspace{display:block!important;width:auto!important;min-width:0!important;max-width:none!important;margin:0!important;padding:0!important;border:0!important}
+  body.printing-report-packet #app aside,body.printing-report-packet #app .toolbar,body.printing-report-packet #app .pagehead,body.printing-report-packet #app .workspace>:not(#report-packet-workspace),body.printing-report-packet .packet-settings>:not([data-packet-output]),body.printing-report-packet [data-packet-output]>:not(.packet-printable){display:none!important}
+  body.printing-report-packet .packet-printable{color:#000;border:0;padding:0}
+  body.printing-report-packet .packet-printable .tablewrap{overflow:visible;max-height:none}
+  body.printing-report-packet .packet-printable tr{break-inside:avoid}
+  body.printing-report-packet .packet-printable h3{break-after:avoid}
+}

@@ -18,3 +18,8 @@ private-kb/
 FirmQuill-Customer-Manual/
 support-private/
 node_modules/
+
+# Keep local activation files out of source and release assets.
+*.fqlicense
+installation-id
+*.fqissuer.pem

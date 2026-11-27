@@ -1,7 +1,12 @@
+import {createModuleActivation} from './module-activation.mjs';
+import {csvReceiptList,previewCsvUndo,executeCsvUndo} from './csv-recovery.mjs';
+import {supportDiagnostics} from './support-diagnostics.mjs';
+import {createScheduledBackups} from './scheduled-backups.mjs';
 import {companyKnowledgeView,companyKnowledgeCommand} from './company-knowledge.mjs';
 import {createPrivateFtps} from './ftps.mjs';
 import {initializeCollaborationGroups,groupAdminView,groupAdminCommand} from './collaboration-groups.mjs';
 import {initializeMessaging,messagingView,messagingCommand,latestMessageId} from './messaging.mjs';
+import {initializeReportPackets,reportPackets} from './report-packet-store.mjs';
 import {initializeMonthEndClose,canSeeMonthEnd,monthEndView,monthEndCommand,monthEndPacket} from './month-end-close.mjs';
 import {catchUpPlanning,localPlanningDay,planningCommand,planningOf,planningSummary} from './shared/planning-core.mjs';
 import {initializeManualPayroll,manualPayrollView,manualPayrollStoreCommand,manualPayrollPortableState} from './manual-payroll-store.mjs';
@@ -11,6 +16,7 @@ import {departmentView,departmentCommand} from './departments.mjs';
 import {projectView,projectCommand,visibleProjectJobs,projectBusinessState} from './project-workspace.mjs';
 import {assetsView,assetsCommand} from './assets-workspace.mjs';
 import {createDriveService,createDriveRoutes} from './file-drives.mjs';
+import {createPasswordWorkGate} from './password-work.mjs';
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {randomBytes,createHash} from 'node:crypto';
@@ -26,14 +32,15 @@ import {accountAreas,requireArea,ERP_AREAS,saveAreas,WORKER_FEATURES,workerFeatu
 import {migrationView,migrationCommand} from './migration.mjs';
 import {createAgentService} from './agent-access.mjs';
 import {createSupportService} from './support.mjs';
+import {createContextualHelp,featuredHelpPages,workspaceHelpPages,mainHelpPages,workerHelpPages,unavailableContext} from './contextual-help.mjs';
 import {createSetupPackage} from './setup-package.mjs';
 import {initializeTeamWorkflows,teamPages,purchasingView,purchasingCommand,myLeave,workerLeaveCommand,reviewLeave,reviewLeaveCommand} from './team-workflows.mjs';
 
 const token=()=>randomBytes(32).toString('base64url');
 const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
-const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs']);
-const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','month-end-close.mjs','company-knowledge.mjs','private-ftps-ui.mjs','audit.html']);
+const common=new Set(['report-packet.mjs','report-packet-ui.mjs','app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs','contextual-help-ui.mjs','contextual-help.css']);
+const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','month-end-close.mjs','backup-admin.mjs','company-knowledge.mjs','private-ftps-ui.mjs','csv-recovery-ui.mjs','activation-ui.mjs','audit.html']);
 const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
@@ -47,10 +54,12 @@ async function jsonBody(req,max){
   return data;
 }
 function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHeader('Content-Type')||'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
-async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},ftpsOptions={},ftpsTransport,driveFactory,planningClock=localPlanningDay,planningIntervalMs=60_000}){
+async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},activationOptions={},ftpsOptions={},ftpsTransport,driveFactory,backupOptions={},backupClock,backupIntervalMs=60_000,backupArchive,planningClock=localPlanningDay,planningIntervalMs=60_000}){
+  const activation=await createModuleActivation(activationOptions);
   const db=openStore(database),sessions=new Map(),attempts=new Map();
   initializeTeamWorkflows(db);
   initializeMonthEndClose(db);
+  initializeReportPackets(db);
   initializeCollaborationGroups(db);
   initializeMessaging(db);
   initializeManualPayroll(db);
@@ -58,15 +67,17 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
   if(termsVersion===legacyAgreement.version&&termsHash===legacyAgreement.hash){
     db.prepare('INSERT OR IGNORE INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) SELECT account_id,version,?,accepted_at FROM terms_acceptances WHERE version=?').run(termsHash,termsVersion);
   }
+  const backups=createScheduledBackups({db,database,options:backupOptions,clock:backupClock,archive:backupArchive});
   const agents=createAgentService({db});
-  const support=createSupportService(supportOptions);
+  const publicSupport=createSupportService(), ownerSupport=createSupportService(supportOptions),contextualHelp=createContextualHelp(supportOptions);
   const privateFtps=createPrivateFtps({options:ftpsOptions,drive:driveFactory?driveFactory(db):driveService,transport:ftpsTransport,onSuccess:(user,company,detail)=>audit(db,user,company,'private-ftps',detail)});
   const identity=createIdentityService({db,database,readBooks,saveBooks,passwordHash,putUser,...identityOptions});
   const dummyHash=await passwordHash(token()),servers=[];
-  let expensive=0,planningTimer;
+  const passwordWork=createPasswordWorkGate();
+  let planningTimer,backupTimer;
   const refreshRecurring=()=>tx(db,()=>{const next=catchUpPlanning(readBooks(db).state,planningClock());if(next.generated)saveBooks(db,next.state);});
   const runRecurring=()=>{try{refreshRecurring();}catch{process.emitWarning('FirmQuill could not refresh recurring drafts. Review the workspace and retry.');}};
-  async function limited(fn){requireThat(expensive<4,429,'Server busy. Try again shortly.');expensive++;try{return await fn();}finally{expensive--;}}
+  const limited=passwordWork.immediate;
   const storeSession=(id,s)=>{for(const [k,v] of sessions)if(v.until<=Date.now()||v.absolute<=Date.now())sessions.delete(k);
     requireThat(sessions.size<10000,429,'Session capacity reached.');sessions.set(id,s);};
   function userFor(session,portal){
@@ -94,6 +105,24 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,...(features.includes('Drives')?{driveCompanyId:user.assignments[0]}:{}),branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null,leave:features.includes('Time off')?myLeave(db,user,state):null}:
       {user:{...publicUser(user),areas:accountAreas(db,user),workspaces:workspacePagesFor(user,state)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
+  function contextualScope(user,portal,page,companyId,state){
+    if(!(portal==='worker'?workerHelpPages:mainHelpPages).has(page))return false;
+    if(!companyId||!state.companies.some(c=>c.id===companyId))return false;
+    if(portal==='worker')return user.assignments[0]===companyId&&(['Home','Setup help'].includes(page)||workerFeatures(db,user).includes(page));
+    if(user.role==='owner')return true;
+    if(!user.assignments.includes(companyId))return false;
+    if(page==='Setup help')return true;
+    if(workspaceHelpPages.has(page)){
+      const company=state.companies.find(c=>c.id===companyId);
+      return workspacePagesFor({...user,assignments:[companyId]}, {...state,companies:[company]}).includes(page);
+    }
+    if(!accountAreas(db,user).includes(page))return false;
+    if(featuredHelpPages.has(page)||page==='Drives')return true;
+    if(page==='Approvals')return ['manager','bookkeeper'].includes(user.role);
+    if(page==='Audit trail')return user.role==='manager';
+    if(page==='Employee records')return ['manager','hr','payroll'].includes(user.role);
+    return page==='Benefits administration'&&['hr','payroll'].includes(user.role);
+  }
   function hasAccepted(user){return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);}
   function portalServer(portal,publicOrigin){
     return createServer(async(req,res)=>{
@@ -114,7 +143,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           if(path.startsWith('/legal/')){
             name=path.slice(7);requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');root='web/legal/';
           }else if(path.startsWith('/shared/')){
-            name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs'].includes(name)),404,'File unavailable.');root='shared/';
+            name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','contextual-help-ui.mjs','contextual-help.css'].includes(name)),404,'File unavailable.');root='shared/';
           }else requireThat((portal==='main'?mainFiles:workerFiles).has(name),404,'File unavailable.');
           const bytes=await readFile(new URL('./'+root+name,import.meta.url));res.writeHead(200,{'Content-Type':mime[name.split('.').pop()]});res.end(req.method==='HEAD'?undefined:bytes);return;
         }
@@ -163,10 +192,18 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
             const b=attempts.get(k)||{count:0,until:now+300000};requireThat(b.count<(i?100:10),429,'Too many attempts. Try again in five minutes.');b.count++;attempts.set(k,b);
           }
           const row=db.prepare('SELECT * FROM accounts WHERE username=? AND active=1').get(username);
-          const ok=await limited(()=>passwordMatches(p.password,row?.hash||dummyHash));
+          const ended=new AbortController(),abort=()=>ended.abort();
+          res.once('close',abort);
+          let ok;
+          try{
+            if(res.destroyed)abort();
+            ok=await passwordWork.login(ip,()=>passwordMatches(p.password,row?.hash||dummyHash),ended.signal);
+          }finally{res.off('close',abort);}
+          if(ended.signal.aborted||res.destroyed)return;
           const u=row&&safeUser(db.prepare('SELECT * FROM accounts WHERE id=? AND active=1').get(row.id));
           requireThat(ok&&u&&row.authVersion===u.authVersion&&(u.role==='worker')===(portal==='worker'),401,'Credentials are invalid for this portal.');
-          const fresh={userId:u.id,authVersion:u.authVersion,portal,csrf:token(),until:now+30*60000,absolute:now+12*3600000},key=token();
+          const signedIn=Date.now();
+          const fresh={userId:u.id,authVersion:u.authVersion,portal,csrf:token(),until:signedIn+30*60000,absolute:signedIn+12*3600000},key=token();
           userFor(fresh,portal);const data=snapshot(u,fresh);attempts.delete(keys[0]);if(s?.portal===portal)sessions.delete(sid);storeSession(key,fresh);setCookie(key,43200);send(res,200,data);return;
         }
         const u=userFor(s,portal);
@@ -180,6 +217,38 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           send(res,200,snapshot(account,s));return;
         }
         requireThat(hasAccepted(u),428,'Read and agree to the Terms of Service first.');
+        if(path==='/api/module-activation'){
+          requireThat(portal==='main',404,'Endpoint unavailable.');
+          owner(u);
+          const current=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);owner(active);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return active;};
+          if(!post){send(res,200,activation.status());return;}
+          const input=await jsonBody(req,8192);
+          const state=await activation.activate(input.code,current);
+          tx(db,()=>audit(db,u,'','module entitlement activated',Object.keys(state.modules).filter(m=>state.modules[m]).join(', ')));
+          send(res,200,state);return;
+        }
+        if(path==='/api/csv-import-recovery'){
+          requireThat(portal==='main',404,'Endpoint unavailable.');
+          owner(u);const companyId=url.searchParams.get('companyId')||'';
+          const companyFrom=state=>{const c=state.companies.find(x=>x.id===companyId);requireThat(c,404,'Company not found.');return c;};
+          if(!post){
+            const company=companyFrom(readBooks(db).state),batch=url.searchParams.get('batch');
+            send(res,200,batch?previewCsvUndo(db,company,batch):csvReceiptList(db,company));return;
+          }
+          const p=await jsonBody(req,2048);
+          const result=tx(db,()=>{
+            requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);owner(active);
+            requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
+            const {state}=readBooks(db),company=companyFrom(state),out=executeCsvUndo(db,company,p,active);
+            if(!out.repeated){
+              company.bank=out.bank;saveBooks(db,state);
+              audit(db,active,companyId,'CSV import recovery',p.batch+' · '+out.removed+' unmatched rows removed; no journal changed');
+            }
+            return {removed:out.removed,repeated:out.repeated};
+          });
+          send(res,200,result);return;
+        }
+
         if(path==='/api/company-knowledge'){
           const companyId=url.searchParams.get('companyId')||undefined;
           if(post){
@@ -206,10 +275,44 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
             const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return active;
           }});return;
         }
-        if(path==='/api/support/info'&&!post){send(res,200,await support.info());return;}
-        if(path==='/api/support/search'&&!post){send(res,200,await support.search(url.searchParams.get('q')||''));return;}
-        if(path==='/api/support/article'&&!post){send(res,200,await support.article(url.searchParams.get('id')));return;}
-        if(path==='/api/support/answer'&&post){const p=await jsonBody(req,4096);send(res,200,await support.answer(p.question));return;}
+        if(path==='/api/support/diagnostics'){
+          requireThat(portal==='main'&&!post,404,'Endpoint unavailable.');
+          owner(u);
+          send(res,200,supportDiagnostics(db));return;
+        }
+        if(path==='/api/support/context'&&!post){
+          const page=url.searchParams.get('page'),companyId=portal==='worker'?u.assignments[0]:url.searchParams.get('companyId');
+          const allowed=user=>contextualScope(user,portal,page,companyId,readBooks(db).state);
+          if(!activation.allows('private-support')||!allowed(u)){send(res,200,unavailableContext());return;}
+          const result=await contextualHelp.lookup({portal,page,companyId,role:u.role});
+          requireThat(sessions.get(sid)===s,401,'Sign in again.');
+          const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
+          const currentCompany=portal!=='worker'||active.assignments[0]===companyId;
+          send(res,200,activation.allows('private-support')&&currentCompany&&active.role===u.role&&allowed(active)?result:unavailableContext());return;
+        }
+        if(path==='/api/managed-backups'){
+          requireThat(portal==='main',404,'Endpoint unavailable.');
+          owner(u);
+          const current=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return active;};
+          const data=post?await backups.save(current(),await jsonBody(req,2048),current):await backups.view(current());
+          send(res,200,data);return;
+        }
+        if((!post&&['/api/support/info','/api/support/search','/api/support/article'].includes(path))||(post&&path==='/api/support/answer')){
+          const input=post?await jsonBody(req,4096):null;
+          const privateAllowed=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return url.searchParams.get('scope')!=='public'&&portal==='main'&&active.role==='owner'&&activation.allows('private-support');};
+          const invoke=source=>path.endsWith('/info')?source.info():path.endsWith('/search')?source.search(url.searchParams.get('q')||''):path.endsWith('/article')?source.article(url.searchParams.get('id')):source.answer(input.question);
+          const privateRequest=privateAllowed();let answer;
+          try{answer=await invoke(privateRequest?ownerSupport:publicSupport);}
+          catch(e){if(!privateRequest||!path.endsWith('/info'))throw e;answer=await invoke(publicSupport);}
+          send(res,200,privateRequest&&!privateAllowed()?await invoke(publicSupport):answer);return;
+        }
+        if(path==='/api/report-packets'){
+          requireThat(portal==='main',404,'Endpoint unavailable.');
+          const input=post?await jsonBody(req,8192):undefined;
+          requireThat(sessions.get(sid)===s,401,'Sign in again.');
+          const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
+          send(res,200,reportPackets(db,active,url.searchParams.get('companyId'),input));return;
+        }
         if(portal==='main'&&['/api/month-end-close','/api/month-end-close/packet'].includes(path)){
           const companyId=url.searchParams.get('companyId')||'',period=url.searchParams.get('period')||undefined;
           if(!post){
@@ -245,7 +348,16 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           send(res,200,result.packageRequested?createSetupPackage(result.dataset,result.approval):result);return;
         }
         if(portal==='main'&&path==='/api/agent-admin'&&!post){send(res,200,agents.view(u));return;}
-        if(portal==='main'&&path==='/api/agent-admin/action'&&post){const p=await jsonBody(req,64*1024);send(res,200,agents.command(userFor(s,portal),p));return;}
+        if(portal==='main'&&path==='/api/agent-admin/action'&&post){
+          const p=await jsonBody(req,64*1024);
+          const current=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return active;};
+          let preWrite;
+          if(p.type==='decide'&&p.decision==='approve'&&backups.enabled()){
+            agents.preflightApproval(current(),p);
+            preWrite=await backups.preWrite('agent-approval');
+          }
+          send(res,200,agents.command(current(),p,{preWrite}));return;
+        }
         const {state:workforceState}=readBooks(db),scope={companyId:url.searchParams.get('companyId')||undefined,employeeId:url.searchParams.get('employeeId')||undefined};
         if(path==='/api/collaboration/messages'||portal==='main'&&path==='/api/collaboration/groups'){
           const messages=path.endsWith('/messages');
@@ -314,9 +426,13 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(portal==='main'&&path==='/api/identity'&&!post){requireArea(db,u,'Identity connectors');send(res,200,identity.view(u,workforceState,scope));return;}
         if(portal==='main'&&path==='/api/identity/action'&&post){requireArea(db,u,'Identity connectors');const p=await jsonBody(req,2*1024*1024);const result=await identity.command(u,workforceState,p.action);send(res,200,{result});return;}
         if(portal==='main'&&path==='/api/manual-payroll'){
-          if(!post){send(res,200,manualPayrollView(db,u,workforceState,scope.companyId));return;}
+          if(!post){send(res,200,{...manualPayrollView(db,u,workforceState,scope.companyId),canProcess:activation.allows('manual-payroll')});return;}
           const input=await jsonBody(req,64*1024);
-          const result=tx(db,()=>manualPayrollStoreCommand(db,userFor(s,portal),readBooks(db).state,scope.companyId,input));
+          const result=tx(db,()=>{
+            requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
+            requireThat(activation.allows('manual-payroll'),403,'Manual payroll processing is not activated for this Full Suite installation.');
+            return {...manualPayrollStoreCommand(db,active,readBooks(db).state,scope.companyId,input),canProcess:true};
+          });
           send(res,200,result);return;
         }
         if(portal==='main'&&path==='/api/payroll/deductions'&&!post){requireArea(db,u,'Payroll');send(res,200,{deductions:effectivePayrollDeductions(db,u,workforceState,scope.companyId,url.searchParams.get('payDate'))});return;}
@@ -374,16 +490,25 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
             const {revision,state}=readBooks(db);assertEmptyDestination(state);s.preview={digest:plan.digest,revision};
             send(res,200,{digest:plan.digest,summary:plan.summary,revision});return;
           }
-          tx(db,()=>{
+          const confirm=()=>{
             const {revision,state}=readBooks(db);assertEmptyDestination(state);revisionCheck(revision,p.revision);
             requireThat(s.preview?.revision===revision&&s.preview?.digest===plan.digest&&plan.digest===p.digest,409,'Preview this backup again.');
-            saveBooks(db,plan.state);audit(db,u,'','import','Encrypted Lite migration · '+plan.digest);
+            const operator=active();owner(operator);requireThat(hasAccepted(operator),428,'Read and agree to the Terms of Service first.');return operator;
+          };
+          let preWrite;
+          if(backups.enabled()){confirm();preWrite=await backups.preWrite('reviewed-lite-import');}
+          tx(db,()=>{
+            const operator=confirm();preWrite?.();
+            saveBooks(db,plan.state);audit(db,operator,'','import','Encrypted Lite migration · '+plan.digest);
           });delete s.preview;
         }else deny(404,'Endpoint unavailable.');
         send(res,200,snapshot(active(),s,extras));
       }catch(e){
         const status=e.status||((e.code||'').startsWith('ERR_SQLITE')||e.code==='ENOENT'?500:400);
-        if(!res.headersSent&&!res.destroyed)send(res,status,{error:status===500?'Storage or application file unavailable.':e.message||'Request failed.'});
+        if(!res.headersSent&&!res.destroyed){
+          if(status===429&&Number.isInteger(e.retryAfter))res.setHeader('Retry-After',String(e.retryAfter));
+          send(res,status,{error:status===500?'Storage or application file unavailable.':e.message||'Request failed.'});
+        }
       }
     });
   }
@@ -393,10 +518,11 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
       const server=portalServer(portal,origin);server.requestTimeout=45000;server.headersTimeout=15000;
       await new Promise((yes,no)=>server.once('error',no).listen(port,'127.0.0.1',yes));servers.push(server);
     }
-  }catch(e){for(const srv of servers)srv.close();db.close();throw e;}
+  }catch(e){for(const srv of servers)srv.close();await backups.close();db.close();throw e;}
   runRecurring();planningTimer=setInterval(runRecurring,planningIntervalMs);planningTimer.unref();
+  backups.tick();backupTimer=setInterval(backups.tick,backupIntervalMs);backupTimer.unref();
   return {mainUrl:'http://127.0.0.1:'+servers[0].address().port,workerUrl:'http://127.0.0.1:'+servers[1].address().port,
-    async close(){clearInterval(planningTimer);await Promise.all(servers.map(srv=>new Promise(r=>{srv.close(r);srv.closeIdleConnections();})));sessions.clear();db.close();}};
+    async close(){passwordWork.close();clearInterval(planningTimer);clearInterval(backupTimer);await Promise.all(servers.map(srv=>new Promise(r=>{srv.close(r);srv.closeIdleConnections();})));sessions.clear();await backups.close();db.close();}};
 }
 
 export {createSuite};
