@@ -23,3 +23,7 @@ node_modules/
 *.fqlicense
 installation-id
 *.fqissuer.pem
+
+# Operator-provided payloads never belong in the app source.
+/packages/
+*.fqpackage

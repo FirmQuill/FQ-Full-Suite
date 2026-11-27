@@ -25,7 +25,7 @@ async function input(path,limit){
   return b;
  }finally{await h.close();}
 }
-function validate(files){
+export function validateSignedSupportFiles(files){
  check(files&&typeof files==='object'&&!Array.isArray(files)&&typeof files['index.json']==='string','Content catalog missing.');
  const names=Object.keys(files);
  check(names.length>=2&&names.length<=41&&names.every(n=>n==='index.json'||/^[a-z0-9-]{1,80}\.md$/.test(n)),'Unsupported documentation file or count.');
@@ -44,24 +44,27 @@ function validate(files){
 }
 function decode(s){check(typeof s==='string'&&/^[A-Za-z0-9_-]+$/.test(s),'Invalid envelope encoding.');const b=Buffer.from(s,'base64url');check(b.toString('base64url')===s,'Invalid envelope encoding.');return b;}
 
-const publicKey=async file=>{
+export const loadSupportPublicKey=async file=>{
  const pem=text(await input(file,512)).trim();
  check(/^-----BEGIN PUBLIC KEY-----\r?\n[A-Za-z0-9+/=\r\n]+\r?\n-----END PUBLIC KEY-----$/.test(pem),'Expected public key PEM.');
  const key=createPublicKey(pem);check(key.asymmetricKeyType==='ed25519','Expected Ed25519 public key.');
  return key;
 };
+export function verifySupportEnvelope(raw,key){
+ const e=JSON.parse(text(raw));check(exact(e,['signed','signature']),'Invalid envelope.');
+ const b=decode(e.signed),sig=decode(e.signature);
+ check(b.length<=cap&&sig.length===64&&verify(null,b,key,sig),'Signature verification failed.');
+ return {body:JSON.parse(text(b)),signedBytes:b};
+}
 export async function loadSignedSupportPackage({packagePath,verifierPath,entitlementVerifierPath,installationId}={}){
  if(!packagePath&&!verifierPath)return {status:'unconfigured'};
  try {
   check(/^[a-f0-9]{64}$/.test(installationId||''),'Expected provisioned installation identity.');
-  const [key,entitlement,raw]=await Promise.all([publicKey(verifierPath),publicKey(entitlementVerifierPath),input(packagePath,2*1024*1024)]);
+  const [key,entitlement,raw]=await Promise.all([loadSupportPublicKey(verifierPath),loadSupportPublicKey(entitlementVerifierPath),input(packagePath,2*1024*1024)]);
   check(!key.export({type:'spki',format:'der'}).equals(entitlement.export({type:'spki',format:'der'})),'Keep issuance trust independent.');
-  const e=JSON.parse(text(raw));check(exact(e,['signed','signature']),'Invalid envelope.');
-  const b=decode(e.signed),sig=decode(e.signature);
-  check(b.length<=cap&&sig.length===64&&verify(null,b,key,sig),'Signature verification failed.');
-  const d=JSON.parse(text(b));
+  const {body:d}=verifySupportEnvelope(raw,key);
   check(exact(d,['format','release','installationId','files'])&&d.format==='firmquill.support-content.v1'&&d.release===version&&d.installationId===installationId,'Wrong release or installation.');
-  validate(d.files);
+  validateSignedSupportFiles(d.files);
   return {status:'verified',files:Object.freeze(d.files)};
  }catch{return {status:'invalid'};}
 }

@@ -5,7 +5,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {pathToFileURL} from 'node:url';
 import {buildPublicRelease} from '../scripts/build-public-release.mjs';
-import {visibleNavigation,navigationGroupMarkup} from '../web/main/navigation-groups.mjs';
+import {visibleNavigation,navigationGroupMarkup,workflowOnSidebar} from '../web/main/navigation-groups.mjs';
 
 test('grouped navigation preserves authorized routes once and uses separate focusable department and chevron controls',()=>{
  const routes=['Overview','Sales','Accounting','Warehouse','Employee records','Messages','User access','Setup help'];
@@ -22,6 +22,17 @@ test('grouped navigation preserves authorized routes once and uses separate focu
  assert.match(folded,/id="nav-hr" class="navgroup-links" hidden/);
  assert.match(navigationGroupMarkup(groups[4]),/aria-expanded="true"/);
 });
+test('sidebar feature preferences keep role-authorized essentials while filtering configured business links',()=>{
+ const modules=['Accounting','Reports','Sales','Purchasing','Payroll','Fixed assets'];
+ const candidates=['Directory','Sales','Purchasing','Purchase requests','Accounting','Month-end close','Report builder','Reports','Payroll','Employee records','Project tracker','Assets & pallets','Version Upgrade','Company setup','Setup help'];
+ const render=features=>visibleNavigation(candidates.filter(k=>workflowOnSidebar(k,features,modules))).flatMap(g=>g.links);
+ const visible=render(['Reports']);
+ for(const key of ['Directory','Report builder','Reports','Employee records','Project tracker','Assets & pallets','Version Upgrade','Company setup','Setup help'])assert.ok(visible.includes(key),key);
+ for(const key of ['Sales','Purchasing','Purchase requests','Accounting','Month-end close','Payroll'])assert.ok(!visible.includes(key),key);
+ assert.ok(render(['Purchasing']).includes('Purchase requests'));
+ assert.ok(!visibleNavigation(['Directory']).flatMap(g=>g.links).includes('Version Upgrade'));
+});
+
 test('packaged ERP and worker serve standalone read-only Legal, approved terms, and same-origin navigation',async t=>{
  const root=await mkdtemp(join(tmpdir(),'fq-nav-artifact-'));t.after(()=>rm(root,{recursive:true,force:true}));
  const runtime=join(root,'runtime');await buildPublicRelease(runtime);
@@ -35,7 +46,7 @@ test('packaged ERP and worker serve standalone read-only Legal, approved terms, 
    assert.deepEqual(await get(endpoint,'/legal/terms.mjs'),await readFile(new URL('../web/legal/terms.mjs',import.meta.url),'utf8'));
    assert.match(await get(endpoint,'/app.mjs'),/href="\/legal\/legal\.html"/);
   }
-  const main=await get(s.mainUrl,'/app.mjs');assert.match(main,/<h1\$\{activeGroup\?' data-department-heading/);assert.match(main,/!activeGroup&&c&&page==='Overview'\?btn\('quote'/);assert.doesNotMatch(main,/FirmQuill · Full Suite preview/);assert.match(main,/Asset workspace unavailable\./);
+  const main=await get(s.mainUrl,'/app.mjs');assert.match(main,/<h1\$\{activeGroup\?' data-department-heading/);assert.match(main,/!activeGroup&&c&&page==='Overview'&&allowed\('Sales'\)\?btn\('quote'/);assert.doesNotMatch(main,/FirmQuill · Full Suite preview/);assert.match(main,/Asset workspace unavailable\./);
   assert.match(await get(s.mainUrl,'/navigation-groups.mjs'),/Finance & reporting/);
   assert.equal((await fetch(s.workerUrl+'/navigation-groups.mjs')).status,404);
  }finally{await s.close();}

@@ -33,8 +33,7 @@ export function createContextualHelp({contextualRoot}={}){
     requireValid(bytes.length>0&&bytes.length<=max);
     return new TextDecoder('utf-8',{fatal:true}).decode(bytes);
   }
-  async function lookup({portal,page,role,companyId}){
-    try{
+  async function catalog(){
       const root=await packageRoot();
       const index=JSON.parse(await read(root,'contextual-index.json',256*1024));
       requireValid(index?.format===HELP_FORMAT&&index.edition==='full-suite'&&index.version===INSTALLED_VERSION&&Array.isArray(index.articles)&&index.articles.length<=500);
@@ -46,6 +45,20 @@ export function createContextualHelp({contextualRoot}={}){
         requireValid(Array.isArray(item.roles)&&item.roles.length&&distinct(item.roles)&&item.roles.every(r=>isMain?mainRoles.has(r):r==='worker'));
         requireValid(Array.isArray(item.companyIds)&&item.companyIds.length&&distinct(item.companyIds)&&item.companyIds.every(id=>typeof id==='string'&&/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(id)));
       }
+      return {root,index};
+  }
+  async function hasContent(){
+    try{
+      const {root,index}=await catalog();
+      for(const item of index.articles.slice(0,32)){
+        try{if((await read(root,item.file,128*1024)).trim())return true;}catch{}
+      }
+      return false;
+    }catch{return false;}
+  }
+  async function lookup({portal,page,role,companyId}){
+    try{
+      const {root,index}=await catalog();
       const matches=index.articles.filter(a=>a.portal===portal&&a.page===page&&a.roles.includes(role)&&a.companyIds.includes(companyId));
       if(matches.length!==1)return unavailableContext();
       const item=matches[0],body=await read(root,item.file,128*1024);
@@ -53,5 +66,5 @@ export function createContextualHelp({contextualRoot}={}){
       return {available:true,title:item.title,body,version:INSTALLED_VERSION};
     }catch{return unavailableContext();}
   }
-  return {lookup};
+  return {lookup,hasContent,configured};
 }

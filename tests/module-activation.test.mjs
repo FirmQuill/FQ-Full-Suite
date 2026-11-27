@@ -21,7 +21,7 @@ test('offline verification: invalid bits, wrong signer/install/edition/module, t
  const root=await folder(t),alternate=await folder(t),foreign=await folder(t);let now=day;
  const fx=await activationFixture(root,{clock:()=>now}),other=await activationFixture(alternate),anotherIssuer=await activationFixture(foreign);
  const app=await createModuleActivation(fx.options);
- const neither={'manual-payroll':false,'private-support':false};
+ const neither={'manual-payroll':false,'private-support':false,'payroll-rule-template':false};
  const cryptoReject=async(code)=>{await assert.rejects(()=>app.activate(code,()=>{}),/invalid for this Full Suite installation/);assert.deepEqual(app.status().modules,neither);};
  assert.ok(app.status().configured);assert.deepEqual(app.status().modules,neither);
  await cryptoReject(anotherIssuer.mint({installationId:fx.id}));await cryptoReject(fx.mint({installationId:other.id}));
@@ -99,7 +99,7 @@ test('live endpoints keep employer-entered payroll available before activation a
  assert.equal(Object.hasOwn((await get('session')).result,'moduleRenewal'),false);
  const status=await get('module-activation');assert.equal(status.result.edition,edition);assert.equal(status.result.installationId,x.fx.id);
  assert.equal((await get(route,payroll)).result.canProcess,true);
- assert.equal((await get('support/info')).result.scope,'public-setup-only');assert.deepEqual((await get(context)).result,{available:false});assert.equal((await get(legacy)).status,404);
+ assert.equal((await get('support/info')).result.scope,'public-setup-only');assert.equal((await get(context)).status,404);assert.equal((await get(legacy)).status,404);
  const rules={type:'rule',revision:0,key:'fiction',name:'Synthetic tax',effective:'2026-10-01',side:'employee',method:'percentage',rate:100000};
  assert.equal((await post(route,rules,payroll)).status,200);
  assert.equal((await post('module-activation',{code:x.fx.mint()},payroll)).status,403);
@@ -123,7 +123,7 @@ test('live endpoints keep employer-entered payroll available before activation a
  assert.equal((await get('module-activation')).result.status,'expired');
  assert.equal((await get('session')).result.moduleRenewal.remainingMs,0);
  assert.equal((await get('support/info')).result.scope,'public-setup-only');assert.equal((await get(legacy)).status,404);
- assert.deepEqual((await get(context)).result,{available:false});
+ assert.equal((await get(context)).status,404);
  const locked=await get(route,payroll);assert.equal(locked.result.data.runs[0].id,'fixture-payroll');assert.equal(locked.result.canProcess,true);
  assert.equal((await post(route,{...rules,revision:3,key:'after-expiry',effective:'2026-11-27'},payroll)).status,200);
  const expiredDraft=await post(route,{type:'draft',id:'expired-payroll',revision:4,employee:x.employee.id,start:'2026-11-11',end:'2026-11-19',payDate:'2026-11-20',regular:22200},payroll);
@@ -237,7 +237,31 @@ test('paid preflight is signed, owner/terms/CSRF scoped, and cannot mutate activ
  assert.equal(await readFile(join(x.fx.options.directory,'active-entitlement.fqlicense'),'utf8'),active);
 });
 
-test('owner reviews an uploaded license through the browser without enabling paid modules', {skip:!executable,timeout:60000},async t=>{
+test('owner upload supports signed and encrypted files, rejects stale/invalid replacements, and requires owner and Terms',async t=>{
+ const x=await setup(t,{encrypted:true}),{mainUrl,workerUrl}=x.suite;
+ const owner=await login(mainUrl,'owner',false),manager=await login(mainUrl,'manager'),worker=await login(workerUrl,'worker');
+ const req=(code,session=owner,fileName='signed.fqlicense',base=mainUrl)=>request(base,'module-activation/upload',{session,body:{fileName,code}});
+ const chosen=x.fx.mint({modules:['private-support'],expiresAt:second+60,issuedAt:second-1,licenseId:'2'.repeat(32)});
+ assert.equal((await req(chosen)).status,428);
+ assert.equal((await req(chosen,manager)).status,403);assert.equal((await req(chosen,worker,'signed.fqlicense',workerUrl)).status,404);
+ await request(mainUrl,'terms',{session:owner,body:fixtureAgreement});
+ assert.equal((await req(chosen,owner,'signed.txt')).status,400);
+ const stored=join(x.fx.options.directory,'active-entitlement.fqlicense');
+ await assert.rejects(readFile(stored),{code:'ENOENT'});
+ const encrypted=x.encrypt(chosen),verified=await req(encrypted);
+ assert.equal(verified.status,200);assert.equal(verified.result.upgrade.status,'complete');
+ assert.ok(!JSON.stringify(verified.result).includes(chosen));assert.equal(await readFile(stored,'utf8'),chosen);
+ const stale=x.fx.mint({modules:['private-support'],issuedAt:second-5,expiresAt:second+100,licenseId:'3'.repeat(32)});
+ for(const [bad,status] of [[stale,409],[x.fx.mint({modules:['private-support'],expiresAt:second}),409],[x.fx.mint({installationId:'a'.repeat(64),modules:['private-support'],expiresAt:second+60}),400],['invalid',400],[encrypted.slice(0,-1),400]]){
+  assert.equal((await req(bad)).status,status);assert.equal(await readFile(stored,'utf8'),chosen);
+ }
+ const replacement=x.fx.mint({modules:['private-support'],issuedAt:second,expiresAt:second+120,licenseId:'4'.repeat(32)});
+ assert.equal((await req(replacement)).status,200);assert.equal(await readFile(stored,'utf8'),replacement);
+ x.advance(120000);
+ assert.deepEqual((await request(mainUrl,'module-activation',{session:owner})).result.upgrade,{status:'partial',reason:'missing-license'});
+});
+
+test('Version Upgrade exposes one visible control and upload writes a validated signed license', {skip:!executable,timeout:60000},async t=>{
  const x=await setup(t,{encrypted:true}),{mainUrl}=x.suite;
  const {chromium}=createRequire(import.meta.url)(process.env.FIRMQUILL_PLAYWRIGHT||'playwright');
  const browser=await chromium.launch({executablePath:executable,headless:true});t.after(()=>browser.close());
@@ -246,24 +270,22 @@ test('owner reviews an uploaded license through the browser without enabling pai
  page.on('request',r=>requests.push(r.url()));page.on('pageerror',e=>errors.push(String(e)));
  await page.goto(mainUrl);
  await page.locator('#login [name=username]').fill('fixture-owner');await page.locator('#login [name=password]').fill(pass);
- const b=name=>page.getByRole('button',{name,exact:true}).first();
- await b('Sign in').click();await b('I agree to the Terms of Service').click();
- await page.locator('nav [data-act=nav][data-key="Module activation"]').first().click();
- const open=()=>b('Upgrade to Paid: preview').click(),review=()=>b('Review license').click();
- const upload=buffer=>page.getByLabel('Signed license file').setInputFiles({name:'signed.fqlicense',mimeType:'text/plain',buffer:Buffer.from(x.encrypt(buffer))});
- const updateFeed={origin:'https://updates.example.com',channel:'current'},terms={updateFeed,licenseId:'c'.repeat(32),issuedAt:second-3600};
- await open();await upload(x.fx.mint({installationId:'a'.repeat(64)}));await review();
- await page.getByText(/invalid for this Full Suite installation/).waitFor();
- await b('Cancel').click();await open();
- await upload(x.fx.mint({...terms,modules:['software_updates'],expiresAt:second,updateFeed:{...updateFeed,origin:'https://updates.example.com/../private'}}));await review();
- await page.getByText(/invalid for this Full Suite installation/).waitFor();
- await upload(x.fx.mint({...terms,modules:['software_updates'],expiresAt:second}));await review();await page.getByRole('heading',{name:'Paid upgrade review'}).waitFor();
- await page.getByText(/Issuer-approved update source/).waitFor();await page.getByText(updateFeed.origin,{exact:true}).waitFor();
- await page.getByText('License status: expired.').waitFor();await page.getByText('Software updates',{exact:true}).waitFor();await b('Close').click();
- await open();await upload(x.fx.mint({...terms,modules:['software_updates','private-support'],expiresAt:second+60}));await review();
- await page.getByText('License status: active.').waitFor();await page.getByText(x.fx.id,{exact:true}).last().waitFor();
- assert.equal(await page.getByText('Requires paid build',{exact:true}).count(),1);
- await b('Close').click();await page.getByText('Activation status: not activated.').waitFor();
+ await page.getByRole('button',{name:'Sign in',exact:true}).click();await page.getByRole('button',{name:'I agree to the Terms of Service',exact:true}).click();
+ await page.locator('nav [data-act=nav][data-key="Version Upgrade"]').first().click();
+ await page.getByRole('heading',{name:'Version Upgrade',exact:true}).waitFor();
+ assert.equal(await page.getByText('Module activation',{exact:true}).count(),0);
+ const slot=page.locator('[data-version-upgrade]');
+ assert.equal(await slot.getByRole('button').count(),1);
+ await slot.getByRole('button',{name:'Upload signed license'}).waitFor();
+ await slot.getByText('Missing license.',{exact:true}).waitFor();
+ assert.equal(await slot.getByText(x.fx.id).count(),0);assert.equal(await slot.locator('table').count(),0);
+ const upload=code=>slot.locator('input[type=file]').setInputFiles({name:'signed.fqlicense',mimeType:'text/plain',buffer:Buffer.from(code)});
+ await page.route('**/api/module-activation/upload',async route=>{await new Promise(r=>setTimeout(r,400));return route.continue();});
+ const chosen=x.fx.mint({modules:['private-support'],expiresAt:second+60,issuedAt:second-1,licenseId:'1'.repeat(32)});
+ await upload(x.encrypt(chosen));await slot.getByText('Upgrade in progress',{exact:true}).waitFor();await slot.getByText('Update fully complete',{exact:true}).waitFor();
+ const stored=join(x.fx.options.directory,'active-entitlement.fqlicense');
+ assert.equal(await readFile(stored,'utf8'),chosen);
+ await upload('unverified');await slot.getByText(/could not be verified/).waitFor();assert.equal(await readFile(stored,'utf8'),chosen);
+ await page.locator('nav [data-act=nav][data-key="Packages"]').first().click();await page.getByText(x.fx.id,{exact:true}).waitFor();
  assert.ok(requests.every(url=>url.startsWith(mainUrl)));assert.deepEqual(errors,[]);
- await assert.rejects(readFile(join(x.fx.options.directory,'active-entitlement.fqlicense')),{code:'ENOENT'});
 });

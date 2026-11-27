@@ -209,3 +209,88 @@ AI integration routes, UI, or command-line adapter are included in 0.6.5.
 A signed license alone cannot restore removed code. For a prior mixed
 license containing an AI module, ask the issuer for a public-compatible
 reissue for the supported entitlement; ordinary workflows do not need one.
+
+### Optional manual package folder
+
+This host can read separately issued, signed data packages from `packages\` beside `host.mjs`. It does not load executable code,
+rewrite the application, download anything, or enroll AI or tax automation.
+Only Knowledge Base Markdown and reviewed schema-1 payroll rule templates are
+supported today. Neither content package is included in the download.
+
+1. Keep the activation directory and its owner-only permissions. Obtain a
+   public-compatible, installation-bound `private-support` license for the canonical `full-suite-knowledge-base` package, or a
+   time-limited `payroll-rule-template` license for that package. Activate it
+   in Version Upgrade. Legacy `private-support` maps only to the existing
+   Knowledge Base capability; unrelated entitlements do not admit other types.
+2. From the issuer obtain the installation-bound `.fqpackage` file and the
+   package signer’s authenticated Ed25519 **public** PEM, distinct from the
+   entitlement verifier. Keep both verifiers outside the program and the
+   drop folder. Never copy a private issuer key to the server.
+3. For initial trust configuration only, start the host with the publisher
+   verifier below. Keep the existing `FIRMQUILL_ENTITLEMENT_PUBLIC_KEY` and
+   `FIRMQUILL_MODULE_INSTALL_DIR` settings. To store drops elsewhere, set
+   `FIRMQUILL_PACKAGES_DIR` to a dedicated absolute directory.
+
+   ```powershell
+   $env:FIRMQUILL_PACKAGE_PUBLISHER_PUBLIC_KEY = 'C:\FirmQuillProtected\package-publisher-public.pem'
+   node host.mjs start
+   ```
+4. Create `packages` beside the application and place at most one
+   `.fqpackage` per supported package ID there. Restrict folder writes to the
+   host operator using protected NTFS permissions. Once trust is configured,
+   routine package drops do not require editing configuration or restarting.
+5. As owner, open **Packages → Review package folder**. Review IDs,
+   types, revisions and eligibility. Select the eligible package(s), check the
+   confirmation and choose **Apply selected packages**. A drop or a license
+   alone never applies a new package. A separate confirmation is required.
+6. Applied Knowledge Base content appears under **Setup help** for the
+   authorized owner. **Payroll → Review payroll templates** lets an authorized
+   company owner or payroll user review and explicitly copy selected rule
+   suggestions. This does not overwrite existing codes, finalize runs, determine
+   applicable taxes, or submit payments. Employer-entered Manual Payroll
+   continues to work without a license.
+
+The host restores only previously approved exact dropped bytes on restart.
+For updates, replace the previous file with the issuer's higher signed
+revision, then use the same owner review flow. A dropped new revision does
+not change an already-running workspace before owner confirmation. If the
+host restarts before you approve a changed drop, that new revision is not
+loaded. A lower revision, a different manifest at the same revision, the
+wrong installation/runtime, an invalid signature or a missing entitlement
+cannot enable content. The host checks the live entitlement before use;
+accepted content is immutable in memory. Missing or unverified drops do not
+interfere with ordinary use. Folder mode does not fall back to a separately
+configured unsigned or legacy signed owner manual.
+
+The approved Knowledge Base catalog and Markdown can contain up to 1 MiB of
+UTF-8. The optional payroll template uses one `templates.json` file up to
+64 KiB, with reviewed, versioned rule suggestions only. Both use a signed JSON envelope with format
+`firmquill.manual-package.v1`. The manifest signs the fixed package ID/type,
+monotonically increasing integer version, exact runtime, installation ID,
+entitlement name, and SHA-256 of each document. Keep
+`manual-package-admission.v1.json` in the protected activation directory together
+with its backup; restoring an older copy of that host directory restores its
+older rollback history. A stale lock after a machine crash fails closed. Have
+the host administrator verify all host processes are stopped before clearing
+the stale lock; do not delete the high-water mark to admit older content.
+
+### Workspace navigation and help
+
+Company setup’s featured-workflow settings control which optional business
+workflows are shown in the sidebar and overview. This is a navigation choice,
+not a permission grant. Administration, Legal, Setup help and other separately
+authorized role tools remain available.
+
+Contextual question marks appear only for a matching, separately configured
+article with active private-support access to that company, role, portal and
+page. The public Setup help remains available without a license. The owner’s separate Packages page shows approved eligible content. Version
+Upgrade only accepts a local signed license file and reports completion based on
+the packages actually applied.
+
+### Versioned add-on installer development
+
+The feature-agnostic installer, signed grants, dynamic settings, contained Node
+service interface and audited workspace broker are documented in
+[ADDON-INSTALLER.md](ADDON-INSTALLER.md). Local acceptance uses signed fictional
+payloads and disposable workspaces. Existing Knowledge Base, Payroll and AI
+payloads were not changed; no release or production deployment is implied.

@@ -1,7 +1,8 @@
-import {visibleNavigation,navigationGroupMarkup} from './navigation-groups.mjs';
+import {visibleNavigation,navigationGroupMarkup,workflowOnSidebar} from './navigation-groups.mjs';
 import {kioskPanel,kioskAction} from './time-kiosk-ui.mjs';
 import {bindPasskeyLogin,bindPasskeyManagement} from '/shared/passkeys-ui.mjs';
-import {activationPanel,activationAction,renderRenewalNotice} from './activation-ui.mjs';
+import {activationPanel,activationAction,packagesPanel,mountLicenseUpload,renderRenewalNotice} from './activation-ui.mjs';
+import {addonPanel,mountAddonActions} from './addon-ui.mjs';
 import {csvRecoveryPanel,csvRecoveryAction} from './csv-recovery-ui.mjs';
 import {mountContextualHelp} from '/shared/contextual-help-ui.mjs';
 import {backupContent,backupAction} from './backup-admin.mjs';
@@ -102,15 +103,15 @@ function suitePages(){
   const role=session.user.role;
   if(auditPortal)return auditAccess()?['Inventory audit','Setup help']:[];
   const workforce=['Employee records',...(['owner','hr','payroll'].includes(role)?['Benefits administration']:[])];
-  const pages=role==='owner'?['Approvals','User access','Time clock kiosk','Audit trail','Portable transfers','Managed backups','Module activation',...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
+  const pages=role==='owner'?['Approvals','User access','Time clock kiosk','Audit trail','Portable transfers','Managed backups','Version Upgrade','Packages',...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
   return [...(session.user.workspaces||[]),...pages.filter(p=>role==='owner'||session.user.areas?.includes(p)),...(companyId&&(role==='owner'||session.user.areas?.includes('Drives'))?['Drives']:[]),...(role==='owner'?['Migration workspace','Planning']:[]),'Setup help'];
 }
-function setup(c){return panel('Company profile',`<p><b>${esc(c.name)}</b></p><p class="quiet">${acts.filter(([v])=>c.activities.includes(v)).map(([,n])=>esc(n)).join(' · ')||'No activities selected'}</p><div class="rule"></div><p>Featured on overview</p><p>${esc(c.featured.join(' · ')||'None')}</p>`,btn('settings','Edit profile'))+
+function setup(c){return panel('Company profile',`<p><b>${esc(c.name)}</b></p><p class="quiet">${acts.filter(([v])=>c.activities.includes(v)).map(([,n])=>esc(n)).join(' · ')||'No activities selected'}</p><div class="rule"></div><p>Featured on the overview and sidebar</p><p>${esc(c.featured.join(' · ')||'None')}</p>`,btn('settings','Edit profile'))+
   panel('Workspaces','<p>Each company keeps its own contacts, stock, document numbers and journals.</p>',session.user.role==='owner'?btn('company','Add company'):'');}
 const views={'Overview':home,'Directory':contacts,'Sales':c=>commerceView(c,true),'Purchasing':c=>commerceView(c,false),'Jobs & time':jobs,'Warehouse':c=>warehouse(c,false),'Assembly':c=>warehouse(c,true),'Fixed assets':assetsView,'Accounting':accounting,'Banking':banks,'Reports':reportView,'Payroll':payrollView,'History':history,'Company setup':setup};
 function restrictedJobs(c){return panel('Jobs',table(['Job'],c.jobs.map(j=>[esc(j.name)])),btn('job','New job'))+panel('Time entries',table(['Date','Employee / job','Minutes','Review'],c.time.toReversed().map(t=>[esc(t.date),esc(title(c.employees,t.employee))+' · '+esc(title(c.jobs,t.job)),t.minutes,t.approved?'Approved':btn('approve time','Approve',t.id)])),btn('time','Log time'))+panel('Employees',table(['Name','Work state','Locality'],c.employees.map(e=>[esc(e.name),esc(e.state),esc(e.locality)])));}
 function payrollBridge(){return (session.user.role==='owner'||session.user.areas?.includes('Employee records')?panel('Publish finalized employee paystubs','<p>Import real finalized PDFs from your payroll process. Employees can securely download or print their own published copies. The worksheet does not generate earnings or finalized stubs.</p>',btn('nav','Publish finalized PDFs','Employee records')):'')+panel('Employee deduction instructions','<p>Review confirmed employee contribution instructions for the selected pay date. Apply them through your payroll process. Closed payroll is never changed.</p>',btn('payroll-deductions','View effective deductions'))+(session.user.role==='owner'||session.user.areas?.includes('Benefits administration')?panel('Pending employer plan changes','<p>Review and export pending requests before recording payroll or provider confirmation.</p>',btn('nav','Open employer plan queue','Benefits administration')):'');}
-const endpoints={'Time clock kiosk':'time-kiosk-admin','Module activation':'module-activation','Managed backups':'managed-backups','Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Setup help':'support/info','Departments':'departments','Project tracker':'projects','Assets & pallets':'assets','Inventory audit':'assets','Purchase requests':'team/purchasing','Time off review':'team/time-off','Planning':'planning','Company knowledge':'company-knowledge','Messages':'collaboration/messages','Collaboration groups':'collaboration/groups','Month-end close':'month-end-close'};
+const endpoints={'Time clock kiosk':'time-kiosk-admin','Version Upgrade':'module-activation','Packages':'module-activation','Managed backups':'managed-backups','Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Setup help':'support/info','Departments':'departments','Project tracker':'projects','Assets & pallets':'assets','Inventory audit':'assets','Purchase requests':'team/purchasing','Time off review':'team/time-off','Planning':'planning','Company knowledge':'company-knowledge','Messages':'collaboration/messages','Collaboration groups':'collaboration/groups','Month-end close':'month-end-close'};
 async function loadPage(){
   const generation=++loadGeneration;auxiliary=null;render();
   if(auditPortal&&!auditAccess())return;
@@ -119,7 +120,11 @@ async function loadPage(){
     catch(e){if(generation===loadGeneration){auxiliary={error:e.message};render();}}return;
   }
   if(session&&page==='Payroll'&&['owner','payroll'].includes(session.user.role)&&companyId&&session.user.areas.includes('Payroll')){
-    try {const response=await api('manual-payroll?companyId='+encodeURIComponent(companyId));if(generation===loadGeneration){auxiliary=response;render();}}
+    try {
+      const query='?companyId='+encodeURIComponent(companyId);
+      const [response,templates]=await Promise.all([api('manual-payroll'+query),api('payroll-rule-templates'+query).catch(()=>null)]);
+      if(generation===loadGeneration){auxiliary={...response,templates};render();}
+    }
     catch(err){if(generation===loadGeneration){auxiliary={error:err.message};render();}}
     return;
   }
@@ -156,8 +161,9 @@ function render(){
   clearTimeout(renewalTimer);
   if(!session){gate();return;}
   const s=session.state,user=session.user,c=s.companies.find(x=>x.id===companyId);
-  const full=[...suitePages(),...(!auditPortal&&c&&(user.role==='owner'||user.areas?.includes('Reports'))?['Report builder']:[])];
-  const allowed=key=>!auditPortal&&(user.role==='owner'||user.areas?.includes(key));
+  const shown=key=>workflowOnSidebar(key,c?.featured,modules);
+  const full=[...suitePages(),...(!auditPortal&&c&&(user.role==='owner'||user.areas?.includes('Reports'))?['Report builder']:[])].filter(shown);
+  const allowed=key=>!auditPortal&&shown(key)&&(user.role==='owner'||user.areas?.includes(key));
   if((!views[page]&&!full.includes(page))||(!full.includes(page)&&!allowed(page)))page=Object.keys(views).find(allowed)||full[0]||'Overview';
   const routes=[...(allowed('Overview')?['Overview']:[]),...(c?['Directory',...modules,'History','Company setup'].filter(allowed):[]),...full];
   visibleGroups=auditPortal?[]:visibleNavigation(routes,{canCreateCompany:user.role==='owner'});
@@ -167,7 +173,8 @@ function render(){
   let body;
   if(activeGroup)body=groupDashboard(activeGroup);
   else if(page==='Time clock kiosk'&&full.includes(page))body=c?kioskPanel(auxiliary):panel(page,'<p>Create or select a company first.</p>');
-  else if(page==='Module activation'&&full.includes(page))body=activationPanel(auxiliary);
+  else if(page==='Version Upgrade'&&full.includes(page))body=activationPanel(auxiliary);
+  else if(page==='Packages'&&full.includes(page))body=packagesPanel(auxiliary)+addonPanel(auxiliary?.addons);
   else if(page==='Report builder'&&full.includes(page))body='<div id="report-packet-workspace"></div>';
   else if(page==='Company knowledge'&&full.includes(page))body=mainKnowledgeContent(auxiliary,c);
   else if(page==='Planning'&&full.includes(page))body=c?(auxiliary?.error?panel('Planning unavailable','<p>'+esc(auxiliary.error)+'</p>'):auxiliary?renderPlanning(c,auxiliary.day,auxiliary):panel('Planning','<p>Loading company planning…</p>')):panel('Planning','<p>Create a company first.</p>');
@@ -176,25 +183,28 @@ function render(){
   else if(full.includes(page)&&['Messages','Collaboration groups'].includes(page))body=c?(page==='Messages'?messagingContent(auxiliary):groupContent(auxiliary)):panel(page,'<p>Create or select a company first.</p>');
   else if(page==='Drives'&&full.includes(page))body='<div id="drive-workspace"></div>';
   else if(full.includes(page))body=['Purchase requests','Time off review'].includes(page)?teamContent(page,auxiliary,session):['Departments','Project tracker'].includes(page)?workspaceContent(page,auxiliary,session):['Assets & pallets','Inventory audit'].includes(page)?renderAssets(auxiliary,{auditOnly:page==='Inventory audit'}):suiteContent(page,auxiliary,session,companyId);
-  else if(c&&allowed(page))body=page==='Jobs & time'&&!allowed('Payroll')?restrictedJobs(c):page==='Payroll'?(['hr','payroll'].includes(user.role)?panel('Payroll employee records','<p>Publish finalized payroll PDFs from Employee records. Employer contribution changes remain pending until reviewed.</p>',allowed('Employee records')?btn('nav','Open employee records','Employee records'):'')+payrollBridge():views[page](c,s,filter)+(['owner','payroll'].includes(user.role)?payrollBridge():'')):views[page](c,s,filter);
+  else if(c&&allowed(page))body=page==='Overview'?home({...c,featured:c.featured.filter(allowed)}):page==='Jobs & time'&&!allowed('Payroll')?restrictedJobs(c):page==='Payroll'?(['hr','payroll'].includes(user.role)?panel('Payroll employee records','<p>Publish finalized payroll PDFs from Employee records. Employer contribution changes remain pending until reviewed.</p>',allowed('Employee records')?btn('nav','Open employee records','Employee records'):'')+payrollBridge():views[page](c,s,filter)+(['owner','payroll'].includes(user.role)?payrollBridge():'')):views[page](c,s,filter);
   else if(c)body=panel('ERP access','<p>No ERP areas are enabled for this login. Ask your administrator to assign access.</p>');
   else body=panel(user.role==='owner'?'Set up your books':'Company access',user.role==='owner'?'<p>Create a company, or import an encrypted Lite backup into this empty workspace.</p>':'<p>Ask your owner to assign your account to a company.</p>',user.role==='owner'?btn('company','Create company','','primary')+btn('nav','Import from Lite','Portable transfers'):'');
   if(!activeGroup&&page==='Banking'&&!auditPortal&&c&&user.role==='owner')body+=csvRecoveryPanel(auxiliary);
   if(!activeGroup&&page==='Payroll'&&!auditPortal&&c&&allowed(page)&&['owner','payroll'].includes(user.role)){
+    if(auxiliary?.templates?.enabled)body=panel('Payroll rule templates','<p>Signed suggestions only. Review before copying selected rules into this company. Existing rules are never replaced.</p>',btn('payroll-templates','Review payroll templates'))+body;
     body=(auxiliary?.data?manualPayrollContent(auxiliary):panel('Manual payroll',auxiliary?.error?'<p>'+esc(auxiliary.error)+'</p>':'<p>Loading company payroll...</p>'))+body;
   }
   if(!activeGroup&&page==='Payroll'&&!auditPortal&&c&&allowed(page)&&!['hr','payroll'].includes(user.role))body=panel('Free federal estimate','<p>The existing federal worksheet is an estimate only. It does not create, process or finalize payroll.</p>')+body;
   if(auditPortal&&!auditAccess())body=panel('Asset workspace unavailable.','<p>Ask the company owner for access to the asset audit workspace.</p>');
   if(c?.projectScope==='permitted-records')body='<div class="callout"><p>These views and totals include only records permitted for your account. Ask the owner for a complete company close.</p></div>'+body;
   const picker=c?`<label for="company">Company</label><select id="company" aria-label="Active company" class="picker">${options(mapping(s.companies))}</select>`:'';
-  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><a class="sidebarfoot small fq-legal-link" href="/legal/legal.html" target="_blank" rel="noopener">Legal</a></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}${!auditPortal&&['owner','manager'].includes(user.role)?'<div data-passkey-management></div>':''}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1${activeGroup?' data-department-heading tabindex="-1"':''}>${activeGroup?esc(activeGroup.title)+' overview':page==='Overview'?'Workspace overview':esc(page)}</h1></div>${!activeGroup&&c&&page==='Overview'?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
-  if(!activeGroup&&(!auditPortal||auditAccess()))mountContextualHelp(app.querySelector('#contextual-help'),{page,companyId,api});
+  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><a class="sidebarfoot small fq-legal-link" href="/legal/legal.html" target="_blank" rel="noopener">Legal</a></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}${!auditPortal&&['owner','manager'].includes(user.role)?'<div data-passkey-management></div>':''}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1${activeGroup?' data-department-heading tabindex="-1"':''}>${activeGroup?esc(activeGroup.title)+' overview':page==='Overview'?'Workspace overview':esc(page)}</h1></div>${!activeGroup&&c&&page==='Overview'&&allowed('Sales')?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&page!=='Version Upgrade'&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
+  if(session.contextualHelpCandidate&&!activeGroup&&(!auditPortal||auditAccess()))mountContextualHelp(app.querySelector('#contextual-help'),{page,companyId,api});
   bindPasskeyManagement(app.querySelector('[data-passkey-management]'),api);
+  if(!activeGroup&&page==='Version Upgrade')mountLicenseUpload(app,{api,refresh:async result=>{const data=await api('session');if(page==='Version Upgrade'){useSession(data);auxiliary=result;render();}}});
+  if(!activeGroup&&page==='Packages')mountAddonActions(app,{api,refresh:loadPage,toast});
   const renewalSlot=app.querySelector('#module-renewal');
   if(renewalSlot){
     const paint=()=>{
       if(!renewalSlot.isConnected)return;
-      const delay=renderRenewalNotice(renewalSlot,session.moduleRenewal,performance.now()-renewalReceivedAt,page==='Module activation');
+      const delay=renderRenewalNotice(renewalSlot,session.moduleRenewal,performance.now()-renewalReceivedAt,page==='Version Upgrade');
       if(delay!==null)renewalTimer=setTimeout(paint,Math.max(1,Math.min(delay,2147483647)));
     };
     paint();
@@ -259,7 +269,7 @@ async function action(type,key){
   if(type==='menu'){menu=!menu;render();return;}
   const context={session,companyId,auxiliary,api,formModal,closeModal,download,toast,async refresh(response){if(response?.state)useSession(response);else useSession(await api('session'));await loadPage();}};
   if(page==='Time clock kiosk'&&type.startsWith('kiosk-'))return kioskAction(type,key,context);
-  if(page==='Module activation'&&activationAction(type,context))return;
+  if(page==='Packages'&&activationAction(type,context))return;
   if(page==='Banking'&&type==='csv-recovery-preview'){
     const generation=loadGeneration,selected=companyId;
     return csvRecoveryAction(type,key,{...context,isCurrent:()=>generation===loadGeneration&&selected===companyId,companyName:session.state.companies.find(c=>c.id===selected)?.name});
@@ -271,9 +281,27 @@ async function action(type,key){
   if(await workspaceAction(type,key,context)||await assetsAction(type,key,context)||await suiteAction(type,key,context))return;
   const s=session.state,c=s.companies.find(x=>x.id===companyId),now=localDate();
   if(c&&page==='Planning'&&auxiliary?.data&&planningAction(type,key,c,auxiliary.day,formModal,async action=>{const response=await api('planning',{companyId,revision:session.revision,action});closeModal();await context.refresh(response);toast(response.generatedDrafts?response.generatedDrafts+' recurring draft(s) created.':'Planning saved.');},auxiliary.data))return;
+  if(page==='Payroll'&&type==='payroll-templates'&&auxiliary?.templates?.enabled){
+    const p=auxiliary.templates,selectedCompany=companyId;
+    const desc=r=>{
+      const rate=n=>String(n/10000)+'%';
+      const usd=n=>n==null?'No cap':'$'+(n/100).toFixed(2);
+      const method=r.method==='percentage'?rate(r.rate):r.method==='flat'?usd(r.amount):r.brackets.map(b=>usd(b.start)+' at '+rate(b.rate)).join(', ');
+      return [r.key,r.side,r.method+' '+method,r.effective+(r.through?' through '+r.through:''),[r.jurisdiction,r.workState,r.locality].filter(Boolean).join(' / '),
+        'Period cap '+usd(r.periodCap),'Annual cap '+usd(r.annualCap),'Wage basis '+(r.wageBasis||'all'),'Pre-tax '+(r.pretaxTreatment||'ignore'),'Cent rounding '+(r.rounding||'nearest'),'Period policy '+(r.periodPolicy||'every')].filter(Boolean).join(' · ');
+    };
+    const rows=p.templates.map(row=>'<p><label><input type="checkbox" name="template" value="'+esc(row.templateId)+'"'+(row.conflict?' disabled':'')+'> '+esc(row.label)+(row.conflict?' (existing rule code)':'')+'</label><br><span class="small">'+esc(desc(row.rule))+'<br>'+esc(row.provenance)+'</span></p>').join('');
+    formModal('Review payroll rule templates','<p>Verify each rule against employer instructions. Package '+esc(p.packageVersion)+' · remaining rule codes '+esc(p.remainingCodes)+'. No pay run is created.</p>'+rows+'<label><input type="checkbox" name="confirm" required> I reviewed the selected rules for this company.</label>','Copy reviewed rules',async (v,f)=>{
+      check(!!v.confirm&&companyId===selectedCompany&&page==='Payroll','Select the original company and open a fresh review.');
+      const selected=f.getAll('template').map(id=>({id,revision:p.templates.find(t=>t.templateId===id)?.revision}));
+      check(selected.length>0,'Choose at least one rule.');
+      const out=await api('payroll-rule-templates?companyId='+encodeURIComponent(selectedCompany),{companyId:selectedCompany,payrollRevision:p.payrollRevision,packageVersion:p.packageVersion,packageDigest:p.packageDigest,selected,confirm:true});
+      closeModal();await loadPage();toast(out.imported+' payroll rule(s) copied for this company.');
+    });return;
+  }
   if(page==='Payroll'&&auxiliary?.data&&manualPayrollAction(type,key,{result:auxiliary,now,formModal,download,allowTimeImport:true,command:async input=>{
     const out=await api('manual-payroll?companyId='+encodeURIComponent(companyId),input);
-    auxiliary=out;closeModal();render();toast(out.finalized?'Manual pay run finalized.':'Manual payroll saved.');
+    auxiliary=out;closeModal();await loadPage();toast(out.finalized?'Manual pay run finalized.':'Manual payroll saved.');
     return out;
   }}))return;
   const form=(label,fields,convert=(v)=>v,button='Save')=>formModal(label,fields,button,(v,f)=>save(type,convert(v,f)));
@@ -285,7 +313,7 @@ async function action(type,key){
   switch(type){
     case 'payroll-deductions':formModal('Effective payroll deductions',dateField(now,'payDate','Pay date'),'View instructions',async v=>{const response=await api('payroll/deductions?companyId='+encodeURIComponent(companyId)+'&payDate='+encodeURIComponent(v.payDate));formModal('Deduction instructions · '+v.payDate,table(['Employee','Plan','Tax treatment','Contribution','Effective date'],response.deductions.map(d=>[esc(title(c.employees,d.employee)),esc(d.planName),esc(d.taxTreatment),d.unit==='percent'?esc(d.value)+'%':money(d.value),esc(d.effective_date)]),'No confirmed contribution instructions apply to this pay date.')+'<p>These instructions have not changed any closed payroll.</p>','',null);});break;
     case 'company':form('Create company',input('name','Company name')+setupFields(),(v,f)=>({...v,activities:f.getAll('activities')}));break;
-    case 'settings':form('Company setup',input('name','Company name','text',c.name)+`<fieldset><legend>Company activities</legend>${choices('activities',acts,c.activities)}</fieldset><div class="callout small">Recommended home & navigation<p id="suggested">${esc(recommended(c.activities).join(' · '))}</p></div><fieldset><legend>Feature these workflows</legend>${choices('featured',modules.map(m=>[m,m]),c.featured)}</fieldset>`,(v,f)=>({...v,activities:f.getAll('activities'),featured:f.getAll('featured')}));break;
+    case 'settings':form('Company setup',input('name','Company name','text',c.name)+`<fieldset><legend>Company activities</legend>${choices('activities',acts,c.activities)}</fieldset><div class="callout small">Recommended home & navigation<p id="suggested">${esc(recommended(c.activities).join(' · '))}</p></div><fieldset><legend>Show these workflows in the sidebar and overview</legend>${choices('featured',modules.map(m=>[m,m]),c.featured)}</fieldset>`,(v,f)=>({...v,activities:f.getAll('activities'),featured:f.getAll('featured')}));break;
     case 'contact':case 'item':form(type==='item'?'Add item or service':'Add contact',input('name','Name')+select('kind','Type',(type==='item'?['Product','Service']:['Customer','Vendor']).map(x=>[x,x])));break;
     case 'job':form('Create job',input('name','Job name'));break;
     case 'employee':form('Add employee',input('name','Employee name')+select('state','Work state',states.map(x=>[x,x]))+input('locality','Work locality')+amount('rate','Hourly rate (USD)'),v=>({...v,rate:cents(v.rate)}));break;

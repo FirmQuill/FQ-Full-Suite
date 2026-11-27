@@ -4,16 +4,26 @@ import {lstat,realpath,open,rename,unlink} from 'node:fs/promises';
 import {isAbsolute,join,relative,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
-import {unwrapUpgradeLicense} from './upgrade-envelope.mjs';
+import {unwrapUpgradeLicense,envelopeMax} from './upgrade-envelope.mjs';
 
 const app=fileURLToPath(new URL('./',import.meta.url));
 const marker='firmquill.activation.v1';
 export const edition='firmquill-full-suite';
-export const modules=Object.freeze(['manual-payroll','private-support']);
+export const modules=Object.freeze(['manual-payroll','private-support','payroll-rule-template']);
 // Recognition for read-only preview does not add runtime entitlements.
 const previewModules=Object.freeze([...modules,'software_updates']);
 const installationId=/^[a-f0-9]{64}$/;
-const codeMax=4096;
+const codeMax=8192;
+const addonPermissions=Object.freeze(['settings','service.runtime','network.https','workspace.read','workspace.write','workspace.write.auto']);
+const addonId=id=>typeof id==='string'&&/^[a-z][a-z0-9-]{2,63}$/.test(id);
+const permissionsValid=list=>Array.isArray(list)&&list.length<=addonPermissions.length&&new Set(list).size===list.length&&list.every(p=>addonPermissions.includes(p));
+const positiveRevision=n=>Number.isSafeInteger(n)&&n>0;
+const canonical=value=>JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
+function validAddonGrants(grants){
+  return Array.isArray(grants)&&grants.length>=1&&grants.length<=16&&new Set(grants.map(g=>g?.id)).size===grants.length&&grants.every(g=>
+    g&&typeof g==='object'&&!Array.isArray(g)&&Object.keys(g).length===4&&['id','minRevision','maxRevision','permissions'].every(k=>Object.hasOwn(g,k))&&
+    addonId(g.id)&&positiveRevision(g.minRevision)&&positiveRevision(g.maxRevision)&&g.minRevision<=g.maxRevision&&permissionsValid(g.permissions));
+}
 const block=(status,message)=>{throw Object.assign(Error(message),{status});};
 const within=(root,file)=>{const r=relative(root,file);return r===''||(!isAbsolute(r)&&!/^\.\.(?:[\\/]|$)/.test(r));};
 const trustedOwner=info=>process.platform==='win32'||info.uid===0||info.uid===process.geteuid();
@@ -38,14 +48,16 @@ function inspect(code,key,id,allowed=modules,withFeed=false){
   const b=decode(encoded),sig=decode(sign);
   if(sig.length!==64||!verify(null,b,key,sig))throw Error();
   const p=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(b));
-  const allow=new Set(['format','edition','installationId','modules','notBefore','expiresAt','licenseId','issuedAt']);
+  const allow=new Set(['format','edition','installationId','modules','notBefore','expiresAt','licenseId','issuedAt','addons']);
   if(withFeed)allow.add('updateFeed');
   if(!p||Object.keys(p).some(k=>!allow.has(k))||p.format!==marker||p.edition!==edition||p.installationId!==id||
-    !Array.isArray(p.modules)||p.modules.length===0||new Set(p.modules).size!==p.modules.length||p.modules.some(m=>!allowed.includes(m)))throw Error();
+    !Array.isArray(p.modules)||p.modules.length===0&&p.addons===undefined||new Set(p.modules).size!==p.modules.length||p.modules.some(m=>!allowed.includes(m)))throw Error();
   if(p.updateFeed!==undefined&&(!validPreviewFeed(p.updateFeed)||!p.modules.includes('software_updates')||
     p.licenseId===undefined||p.issuedAt===undefined||p.expiresAt===undefined))throw Error();
   if(p.licenseId!==undefined&&(typeof p.licenseId!=='string'||!/^[a-f0-9]{32}$/.test(p.licenseId)))throw Error();
   for(const k of ['notBefore','expiresAt','issuedAt'])if(p[k]!==undefined&&(!Number.isSafeInteger(p[k])||p[k]<0||p[k]>253402300799))throw Error();
+  if(p.addons!==undefined&&(!validAddonGrants(p.addons)||p.licenseId===undefined||p.issuedAt===undefined||p.expiresAt===undefined))throw Error();
+  if(p.modules.includes('payroll-rule-template')&&p.expiresAt===undefined)throw Error();
   if(p.expiresAt!==undefined&&(p.notBefore!==undefined&&p.expiresAt<=p.notBefore||p.issuedAt!==undefined&&p.expiresAt<=p.issuedAt))throw Error();
   return p;
 }
@@ -101,16 +113,18 @@ export async function createModuleActivation({directory,verifierPath,clock=Date.
       try{current=inspect(await readBounded(filename,codeMax,{privateFile:true}),key,id);}catch(e){if(e.code!=='ENOENT')invalid=true;}
     }catch{problem=true;id=null;key=null;filename=null;}
   }
+  const addonGrants=()=>!key||invalid||temporal(current,clock())!=='active'?Object.freeze([]):Object.freeze((current.addons??[]).map(g=>Object.freeze({...g,permissions:Object.freeze([...g.permissions])})));
+  const addonAllows=(id,revision,permissions=[])=>addonId(id)&&positiveRevision(revision)&&permissionsValid(permissions)&&addonGrants().some(g=>g.id===id&&revision>=g.minRevision&&revision<=g.maxRevision&&permissions.every(p=>g.permissions.includes(p)));
   const status=()=>{
     const state=temporal(current,clock()),active=state==='active';
-    return {edition,installationId:id,configured:!!key,configurationIssue:problem,upgradePreviewConfigured:!!key&&!!recipientKey,paidScopePresent:!!current?.modules.some(m=>m!=='manual-payroll'),
+    return {edition,installationId:id,configured:!!key,configurationIssue:problem,upgradePreviewConfigured:!!key&&!!recipientKey,paidScopePresent:!!current&&(current.modules.some(m=>m!=='manual-payroll')||!!current.addons?.length),addons:addonGrants(),
       modules:Object.fromEntries(modules.map(m=>[m,active&&current.modules.includes(m)])),
       status:invalid?'invalid saved activation':state,expiresAt:current?.expiresAt??null,notBefore:current?.notBefore??null};
   };
   // Owner UI projection only: no code, identity, module scope, issuer or file paths.
   const renewalNotice=()=>{
     const now=clock(),state=temporal(current,now);
-    if(invalid||!current||current.expiresAt===undefined||!['active','expired'].includes(state)||!current.modules.some(m=>m!=='manual-payroll'))return null;
+    if(invalid||!current||current.expiresAt===undefined||!['active','expired'].includes(state)||!current.modules.some(m=>m!=='manual-payroll')&&!current.addons?.length)return null;
     return {expiresAt:current.expiresAt,remainingMs:Math.max(0,current.expiresAt*1000-now)};
   };
   const allows=mod=>modules.includes(mod)&&!!key&&temporal(current,clock())==='active'&&current.modules.includes(mod);
@@ -118,15 +132,20 @@ export async function createModuleActivation({directory,verifierPath,clock=Date.
     if(!key||!recipientKey)block(409,'This host is not configured to review encrypted licenses. Ask the host administrator to provision its recipient key and public verifier.');
     let p;
     try{p=inspect(unwrapUpgradeLicense(code,recipientKey),key,id,previewModules,true);}catch{block(400,'Encrypted license is invalid for this Full Suite installation.');}
-    return {edition,installationId:id,status:temporal(p,clock()),expiresAt:p.expiresAt??null,notBefore:p.notBefore??null,
+    return {edition,installationId:id,status:temporal(p,clock()),expiresAt:p.expiresAt??null,notBefore:p.notBefore??null,...(p.addons?{addons:temporal(p,clock())==='active'?p.addons.map(g=>({...g,permissions:[...g.permissions]})):[]}:{}),
       updateFeed:p.updateFeed??null,entitlements:p.modules.filter(m=>m!=='manual-payroll').map(id=>({id,requiresPaidBuild:!modules.includes(id)}))};
   }
-  async function activate(code,authorize){
+  async function activate(code,authorize,{uploaded=false}={}){
     if(!key||!filename)block(409,'Host activation is not configured. Ask the host administrator to provision the public verifier.');
     if(writing)block(409,'Another activation is in progress. Retry.');
     let p;
     try{p=inspect(code,key,id);}catch{block(400,'Activation code is invalid for this Full Suite installation.');}
     if(temporal(p,clock())!=='active')block(409,'This activation is expired or is not yet valid.');
+    if((current?.addons||p.addons)&&current){
+      if(p.issuedAt===undefined||current.issuedAt!==undefined&&(p.issuedAt<current.issuedAt||p.issuedAt===current.issuedAt&&canonical(p)!==canonical(current)))block(409,'An older, undated or conflicting license cannot replace the current add-on license.');
+    }
+    if(uploaded&&temporal(current,clock())==='active'&&current.issuedAt!==undefined&&
+       (p.issuedAt===undefined||p.issuedAt<current.issuedAt))block(409,'An older or undated file cannot replace the current active dated license.');
     authorize();
     const tmp=resolve(filename+'.'+randomBytes(16).toString('hex')+'.partial');
     writing=true;
@@ -140,5 +159,19 @@ export async function createModuleActivation({directory,verifierPath,clock=Date.
     finally{writing=false;await unlink(tmp).catch(()=>{});}
     return status();
   }
-  return {status,allows,activate,preview,renewalNotice};
+  async function upload(code,authorize){
+    if(typeof code!=='string'||Buffer.byteLength(code)>envelopeMax)block(400,'Choose a valid signed .fqlicense file.');
+    let plain=code.trim();
+    if(plain.split('.').length===5){
+      if(!recipientKey)block(409,'Encrypted license verification is not configured on this host.');
+      try{plain=unwrapUpgradeLicense(plain,recipientKey);}catch{block(400,'The signed license is invalid for this installation.');}
+    }
+    return activate(plain,authorize,{uploaded:true});
+  }
+  const remainingMs=mod=>{
+    const now=clock();
+    if(!modules.includes(mod)||!key||temporal(current,now)!=='active'||!current.modules.includes(mod))return 0;
+    return current.expiresAt===undefined?60000:Math.min(60000,Math.max(0,current.expiresAt*1000-now));
+  };
+  return {status,allows,addonGrants,addonAllows,activate,upload,preview,renewalNotice,remainingMs};
 }

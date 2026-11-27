@@ -1,8 +1,15 @@
+import {modules as businessModules} from './shared/core.mjs';
+import {fileURLToPath} from 'node:url';
+import {workflowOnSidebar} from './web/main/navigation-groups.mjs';
 import {recoveryCapacity} from './recovery.mjs';
 import {initializeTimeKiosk,createTimeKiosk} from './time-kiosk.mjs';
 import {createPasskeys,initializePasskeys,passkeyOrigin} from './passkeys.mjs';
 import {createModuleActivation} from './module-activation.mjs';
+import {createAddonInstaller} from './addon-installer.mjs';
+import {createAddonWorkspaceBridge} from './addon-workspace-broker.mjs';
 import {loadSignedSupportPackage} from './signed-support-package.mjs';
+import {loadManualPackageFolder} from './manual-package-folder.mjs';
+import {applyPayrollTemplates,previewPayrollTemplates,validatePayrollTemplatePayload,payrollTemplateId} from './payroll-template-package.mjs';
 import {csvReceiptList,previewCsvUndo,executeCsvUndo} from './csv-recovery.mjs';
 import {supportDiagnostics} from './support-diagnostics.mjs';
 import {createScheduledBackups} from './scheduled-backups.mjs';
@@ -35,7 +42,7 @@ import {brandingSettings,saveWorkerBranding,workerBranding,workerBrandLogo} from
 import {accountAreas,requireArea,ERP_AREAS,saveAreas,WORKER_FEATURES,workerFeatures,requireWorkerFeature,workerRecords} from './access.mjs';
 import {migrationView,migrationCommand} from './migration.mjs';
 import {createSupportService} from './support.mjs';
-import {createContextualHelp,featuredHelpPages,workspaceHelpPages,mainHelpPages,workerHelpPages,unavailableContext} from './contextual-help.mjs';
+import {createContextualHelp,featuredHelpPages,workspaceHelpPages,mainHelpPages,workerHelpPages} from './contextual-help.mjs';
 import {createSetupPackage} from './setup-package.mjs';
 import {initializeTeamWorkflows,teamPages,purchasingView,purchasingCommand,myLeave,workerLeaveCommand,reviewLeave,reviewLeaveCommand} from './team-workflows.mjs';
 
@@ -43,7 +50,7 @@ const token=()=>randomBytes(32).toString('base64url');
 const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
 const common=new Set(['passkeys-ui.mjs','passkey-browser.mjs','report-packet.mjs','report-packet-ui.mjs','app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs','contextual-help-ui.mjs','contextual-help.css']);
-const mainFiles=new Set(['navigation-groups.mjs','index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','month-end-close.mjs','backup-admin.mjs','company-knowledge.mjs','private-ftps-ui.mjs','csv-recovery-ui.mjs','activation-ui.mjs','time-kiosk-ui.mjs','audit.html']);
+const mainFiles=new Set(['navigation-groups.mjs','index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','month-end-close.mjs','backup-admin.mjs','company-knowledge.mjs','private-ftps-ui.mjs','csv-recovery-ui.mjs','activation-ui.mjs','addon-ui.mjs','time-kiosk-ui.mjs','audit.html']);
 const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs','kiosk.html','kiosk.mjs','kiosk.css']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
@@ -57,7 +64,7 @@ async function jsonBody(req,max){
   return data;
 }
 function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHeader('Content-Type')||'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
-async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},activationOptions={},ftpsOptions={},ftpsTransport,driveFactory,backupOptions={},backupClock,backupIntervalMs=60_000,backupArchive,planningClock=localPlanningDay,planningIntervalMs=60_000}){
+async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},activationOptions={},addonOptions={},workspaceBridgeFactory=createAddonWorkspaceBridge,ftpsOptions={},ftpsTransport,driveFactory,backupOptions={},backupClock,backupIntervalMs=60_000,backupArchive,planningClock=localPlanningDay,planningIntervalMs=60_000}){
   const activation=await createModuleActivation(activationOptions);
   const db=openStore(database),sessions=new Map(),attempts=new Map();
   initializeTeamWorkflows(db);
@@ -73,9 +80,52 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     db.prepare('INSERT OR IGNORE INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) SELECT account_id,version,?,accepted_at FROM terms_acceptances WHERE version=?').run(termsHash,termsVersion);
   }
   const backups=createScheduledBackups({db,database,options:backupOptions,clock:backupClock,archive:backupArchive});
-  const signedSupport=await loadSignedSupportPackage({...supportOptions.signedSupport,entitlementVerifierPath:activationOptions.verifierPath,installationId:activation.status().installationId});
-  if(signedSupport.status==='invalid')process.emitWarning('FirmQuill did not admit the configured signed support package. Verify the package, release, installation ID and trusted public keys; normal app features remain available.');
-  const publicSupport=createSupportService(), ownerSupport=createSupportService(signedSupport.status==='unconfigured'?supportOptions:{signedSupportFiles:signedSupport.files??null}),contextualHelp=createContextualHelp(supportOptions);
+  const trust={entitlementVerifierPath:activationOptions.verifierPath,installationId:activation.status().installationId};
+  const additionalTypes={[payrollTemplateId]:{type:payrollTemplateId,entitlement:payrollTemplateId,validate(files){
+    const raw=files['templates.json'];
+    requireThat(Object.keys(files).length===1&&typeof raw==='string'&&Buffer.byteLength(raw)<=64*1024,400,'Invalid payroll template package.');
+    return validatePayrollTemplatePayload(JSON.parse(raw));
+  }}};
+  const scanOptions={...supportOptions.packageFolder,...trust,activationDirectory:activationOptions.directory,entitled:activation.allows,additionalTypes};
+  let drop=await loadManualPackageFolder(scanOptions);
+  if(!['unconfigured','verified','review-required'].includes(drop.status))process.emitWarning('FirmQuill did not load optional dropped content ('+drop.status+'). Check the signed package and license; normal app features remain available.');
+  const legacy=drop.status==='unconfigured'?await loadSignedSupportPackage({...supportOptions.signedSupport,...trust}):null;
+  if(legacy?.status==='invalid')process.emitWarning('FirmQuill did not admit the configured signed support package. Verify the package, release, installation ID and trusted public keys; normal app features remain available.');
+  const workspaceBridge=workspaceBridgeFactory({db,sessions,getUrl:()=> 'http://127.0.0.1:'+servers[0]?.address()?.port,mainOrigin,hasAccepted,audit});
+  const authorizeRuntime=approval=>{requireThat(approval&&typeof approval.id==='string',403,'The approving owner is unavailable.');const active=safeUser(db.prepare('SELECT * FROM accounts WHERE id=? AND active=1').get(approval.id));owner(active);requireThat(active.authVersion===approval.authVersion,403,'The approving owner must reauthorize this runtime.');requireThat(hasAccepted(active),428,'The approving owner must accept current Terms.');return active;};
+  const addons=await createAddonInstaller({activationDirectory:activationOptions.directory,activation,workspaceBridge,authorizeRuntime,protectedPaths:[fileURLToPath(new URL('./',import.meta.url)),...(database===':memory:'?[]:[database])],...addonOptions});
+  const publicSupport=createSupportService(),contextualHelp=createContextualHelp(supportOptions);
+  const localOwnerSupport=()=>legacy?.status==='unconfigured'?createSupportService(supportOptions):createSupportService({signedSupportFiles:legacy?.files??drop.files??null});
+  let ownerSupport=localOwnerSupport(),supportGeneration=0,applyingPackage=false;
+  const packageAdmission=()=>({status:drop.status,capabilities:Object.entries(drop.packages??{}).map(([id,p])=>({id,version:p.version,active:activation.allows(p.entitlement)}))});
+  async function shownActivation(){
+    const eligibleModules=[];
+    if(activation.allows('private-support')){
+      const loaded=!!(drop.files||legacy?.files);
+      const local=legacy?.status==='unconfigured'&&typeof supportOptions.documentationRoot==='string'&&await ownerSupport.info().then(()=>true,()=>false);
+      if((loaded||local||await contextualHelp.hasContent())&&activation.allows('private-support'))eligibleModules.push('private-support');
+    }
+    if(drop.packages?.[payrollTemplateId]&&activation.allows(payrollTemplateId))eligibleModules.push(payrollTemplateId);
+    const state=activation.status(),required=['private-support',payrollTemplateId].filter(m=>state.modules[m]);
+    let upgrade={status:'partial',reason:'missing-license'};
+    if(required.length){
+      const review=drop.status==='unconfigured'?null:await loadManualPackageFolder({...scanOptions,operation:'preview'});
+      const neededIds=required.map(m=>m==='private-support'?'full-suite-knowledge-base':m);
+      const reviewStillCurrent=!review||neededIds.every(id=>review.candidates?.some(c=>c.id===id&&c.eligible&&c.reason==='already-applied'&&c.version===drop.packages?.[id]?.version));
+      const complete=required.every(m=>eligibleModules.includes(m)&&activation.allows(m))&&reviewStillCurrent;
+      const badDrop=review?.status==='invalid'||review?.candidates?.some(c=>neededIds.includes(c.id)&&c.reason==='revision-rejected');
+      upgrade=complete?{status:'complete'}:{status:'partial',reason:badDrop?'package-error':'missing-packages'};
+      if(!required.some(m=>activation.allows(m)))upgrade={status:'partial',reason:'missing-license'};
+    }
+    const addonStatus=await addons.status();
+    if(state.addons?.length){
+      const installed=addonStatus.installed;
+      if(installed.some(p=>p.pendingRestart))upgrade={status:'restart'};
+      else if(state.addons.every(g=>installed.some(p=>p.id===g.id&&p.revision>=g.minRevision&&p.revision<=g.maxRevision&&['active','rolled-back'].includes(p.status)))&&(!required.length||upgrade.status==='complete'))upgrade={status:'complete'};
+      else upgrade={status:'partial',reason:'package-error'};
+    }
+    return {...activation.status(),modules:Object.fromEntries(eligibleModules.filter(activation.allows).map(m=>[m,true])),eligibleModules:eligibleModules.filter(activation.allows),packageAdmission:packageAdmission(),addons:addonStatus,upgrade};
+  }
   const privateFtps=createPrivateFtps({options:ftpsOptions,drive:driveFactory?driveFactory(db):driveService,transport:ftpsTransport,onSuccess:(user,company,detail)=>audit(db,user,company,'private-ftps',detail)});
   const identity=createIdentityService({db,database,readBooks,saveBooks,passwordHash,putUser,...identityOptions});
   const dummyHash=await passwordHash(token()),servers=[];
@@ -112,13 +162,16 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     const features=s.portal==='worker'?workerFeatures(db,user):[];
     const time=s.portal==='worker'?workerView(db,user,state):null;
     const renewal=s.portal==='main'&&user.role==='owner'?activation.renewalNotice():null;
-    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,...(features.includes('Drives')?{driveCompanyId:user.assignments[0]}:{}),branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null,leave:features.includes('Time off')?myLeave(db,user,state):null}:
-      {user:{...publicUser(user),areas:accountAreas(db,user),workspaces:workspacePagesFor(user,state)},csrf:s.csrf,state:scoped(user,state,db),revision,...(renewal?{moduleRenewal:renewal}:{}),portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
+    const help=contextualHelp.configured&&activation.allows('private-support')?{contextualHelpCandidate:true}:{};
+    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,...help,...(features.includes('Drives')?{driveCompanyId:user.assignments[0]}:{}),branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null,leave:features.includes('Time off')?myLeave(db,user,state):null}:
+      {user:{...publicUser(user),areas:accountAreas(db,user),workspaces:workspacePagesFor(user,state)},csrf:s.csrf,state:scoped(user,state,db),revision,...help,...(renewal?{moduleRenewal:renewal}:{}),portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
   function contextualScope(user,portal,page,companyId,state){
     if(!(portal==='worker'?workerHelpPages:mainHelpPages).has(page))return false;
-    if(!companyId||!state.companies.some(c=>c.id===companyId))return false;
+    const selectedCompany=state.companies.find(c=>c.id===companyId);
+    if(!companyId||!selectedCompany)return false;
     if(portal==='worker')return user.assignments[0]===companyId&&(['Home','Setup help'].includes(page)||workerFeatures(db,user).includes(page));
+    if(!workflowOnSidebar(page,selectedCompany.featured,businessModules))return false;
     if(user.role==='owner')return true;
     if(!user.assignments.includes(companyId))return false;
     if(page==='Setup help')return true;
@@ -308,15 +361,59 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           requireThat(input&&Object.keys(input).length===1&&Object.hasOwn(input,'code'),400,'Select an issuer-signed license file.');
           send(res,200,activation.preview(input.code));return;
         }
+        if(path==='/api/addons'||path.startsWith('/api/addons/')){
+          requireThat(portal==='main',404,'Endpoint unavailable.');owner(u);
+          const current=()=>{requireThat(sessions.get(sid)===s&&!res.destroyed,401,'Sign in again.');const active=userFor(s,portal);owner(active);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return active;};
+          current();
+          if(!post&&path==='/api/addons'){const value=await addons.status();current();send(res,200,value);return;}
+          if(!post&&path==='/api/addons/review'){const value=await addons.review();current();send(res,200,value);return;}
+          const actions={'/api/addons/apply':['apply',['id','receipt','confirm']],'/api/addons/restart':['restart',['id','confirm']],'/api/addons/settings':['settings',['id','settings','confirm']],'/api/addons/invoke':['invoke',['id','value']],'/api/addons/write-policy':['writePolicy',['id','autoApproveWrites','confirm']],'/api/addons/approve-write':['approveWrite',['id','proposalId','digest','confirm']]};
+          requireThat(post&&Object.hasOwn(actions,path),404,'Endpoint unavailable.');
+          const [action,keys]=actions[path],input=await jsonBody(req,action==='invoke'?1024*1024:8192);
+          requireThat(Object.keys(input).length===keys.length&&keys.every(k=>Object.hasOwn(input,k)),400,'Invalid add-on request.');
+          if(action!=='invoke')tx(db,()=>audit(db,u,'','add-on owner request',JSON.stringify({id:input.id,action})));
+          const value=await addons[action](input,current);current();if(action!=='invoke')tx(db,()=>audit(db,u,'','add-on owner approval',JSON.stringify({id:input.id,action})));send(res,200,value);return;
+        }
+        if(path==='/api/package-folder'){
+          requireThat(portal==='main',404,'Endpoint unavailable.');owner(u);
+          const authorize=()=>{requireThat(sessions.get(sid)===s&&!res.destroyed,401,'Sign in again.');const active=userFor(s,portal);owner(active);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');};
+          if(!post){
+            const review=await loadManualPackageFolder({...scanOptions,operation:'preview'});
+            authorize();
+            send(res,200,{status:review.status,candidates:review.candidates??[],receipt:review.receipt??null});
+            return;
+          }
+          const input=await jsonBody(req,1024);authorize();
+          requireThat(input&&typeof input==='object'&&!Array.isArray(input)&&Object.keys(input).length===3&&input.confirm===true&&Array.isArray(input.ids)&&input.ids.length>=1&&input.ids.length<=8&&typeof input.receipt==='string'&&/^[0-9a-f]{64}$/.test(input.receipt),400,'Review the signed package folder and explicitly confirm before applying.');
+          requireThat(!applyingPackage,409,'A package review is already being applied; refresh.');
+          applyingPackage=true;
+          try{
+            const next=await loadManualPackageFolder({...scanOptions,operation:'apply',receipt:input.receipt,ids:input.ids,authorize});
+            authorize();requireThat(next.status==='verified',409,'The reviewed package folder, entitlement, or verified revision changed. Open a fresh review.');
+            const packages=Object.freeze({...drop.packages,...next.packages});
+            drop={status:'verified',packages,files:packages['full-suite-knowledge-base']?.files};
+            ownerSupport=localOwnerSupport();supportGeneration++;
+            send(res,200,{packageAdmission:packageAdmission()});return;
+          }finally{applyingPackage=false;}
+        }
+        if(path==='/api/module-activation/upload'){
+          requireThat(portal==='main'&&post,404,'Endpoint unavailable.');owner(u);
+          const input=await jsonBody(req,12000);
+          requireThat(input&&typeof input==='object'&&!Array.isArray(input)&&Object.keys(input).length===2&&typeof input.code==='string'&&typeof input.fileName==='string'&&/^[^\\/\x00-\x1f]{1,120}\.fqlicense$/i.test(input.fileName),400,'Choose a signed .fqlicense file.');
+          const current=()=>{requireThat(sessions.get(sid)===s&&!res.destroyed,401,'Sign in again.');const active=userFor(s,portal);owner(active);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');};
+          await activation.upload(input.code,current);
+          tx(db,()=>audit(db,u,'','signed license activated','verified local upload'));
+          const shown=await shownActivation();current();send(res,200,shown);return;
+        }
         if(path==='/api/module-activation'){
           requireThat(portal==='main',404,'Endpoint unavailable.');
           owner(u);
           const current=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);owner(active);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return active;};
-          if(!post){send(res,200,activation.status());return;}
+          if(!post){const shown=await shownActivation();current();send(res,200,shown);return;}
           const input=await jsonBody(req,8192);
           const state=await activation.activate(input.code,current);
           tx(db,()=>audit(db,u,'','module entitlement activated',Object.keys(state.modules).filter(m=>state.modules[m]).join(', ')));
-          send(res,200,state);return;
+          const shown=await shownActivation();current();send(res,200,shown);return;
         }
         if(path==='/api/csv-import-recovery'){
           requireThat(portal==='main',404,'Endpoint unavailable.');
@@ -371,15 +468,18 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           owner(u);
           send(res,200,supportDiagnostics(db));return;
         }
-        if(path==='/api/support/context'&&!post){
+        if(path==='/api/support/context'){
+          requireThat(!post,404,'Endpoint unavailable.');
           const page=url.searchParams.get('page'),companyId=portal==='worker'?u.assignments[0]:url.searchParams.get('companyId');
           const allowed=user=>contextualScope(user,portal,page,companyId,readBooks(db).state);
-          if(!activation.allows('private-support')||!allowed(u)){send(res,200,unavailableContext());return;}
+          requireThat(activation.allows('private-support')&&allowed(u),404,'Endpoint unavailable.');
           const result=await contextualHelp.lookup({portal,page,companyId,role:u.role});
           requireThat(sessions.get(sid)===s,401,'Sign in again.');
           const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
           const currentCompany=portal!=='worker'||active.assignments[0]===companyId;
-          send(res,200,activation.allows('private-support')&&currentCompany&&active.role===u.role&&allowed(active)?result:unavailableContext());return;
+          const validForMs=activation.remainingMs('private-support');
+          requireThat(result.available&&validForMs>0&&currentCompany&&active.role===u.role&&allowed(active),404,'Endpoint unavailable.');
+          send(res,200,url.searchParams.get('check')==='1'?{available:true,validForMs}:result);return;
         }
         if(path==='/api/managed-backups'){
           requireThat(portal==='main',404,'Endpoint unavailable.');
@@ -394,10 +494,10 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           const input=post?await jsonBody(req,4096):null;
           const privateAllowed=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return url.searchParams.get('scope')!=='public'&&portal==='main'&&active.role==='owner'&&activation.allows('private-support');};
           const invoke=source=>path.endsWith('/info')?source.info():path.endsWith('/search')?source.search(url.searchParams.get('q')||''):path.endsWith('/article')?source.article(url.searchParams.get('id')):source.answer(input.question);
-          const privateRequest=privateAllowed();let answer;
+          const privateRequest=privateAllowed(),generation=supportGeneration;let answer;
           try{answer=await invoke(privateRequest?ownerSupport:publicSupport);}
           catch(e){if(!privateRequest||!path.endsWith('/info'))throw e;answer=await invoke(publicSupport);}
-          send(res,200,privateRequest&&!privateAllowed()?await invoke(publicSupport):answer);return;
+          send(res,200,privateRequest&&(!privateAllowed()||generation!==supportGeneration)?await invoke(publicSupport):answer);return;
         }
         if(path==='/api/report-packets'){
           requireThat(portal==='main',404,'Endpoint unavailable.');
@@ -507,6 +607,13 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         }
         if(portal==='main'&&path==='/api/identity'&&!post){requireArea(db,u,'Identity connectors');send(res,200,identity.view(u,workforceState,scope));return;}
         if(portal==='main'&&path==='/api/identity/action'&&post){requireArea(db,u,'Identity connectors');const p=await jsonBody(req,2*1024*1024);const result=await identity.command(u,workforceState,p.action);send(res,200,{result});return;}
+        if(portal==='main'&&path==='/api/payroll-rule-templates'){
+          const options={db,companyId:scope.companyId,allows:activation.allows,packageFor:()=>drop.packages?.[payrollTemplateId]??null};
+          if(!post){send(res,200,previewPayrollTemplates({...options,user:u,state:workforceState}));return;}
+          const input=await jsonBody(req,8192);
+          const active=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const user=userFor(s,portal);requireThat(hasAccepted(user),428,'Read and agree to the Terms of Service first.');return user;};
+          send(res,200,applyPayrollTemplates({...options,input,active,readState:()=>readBooks(db).state}));return;
+        }
         if(portal==='main'&&path==='/api/manual-payroll'){
           if(!post){send(res,200,{...manualPayrollView(db,u,workforceState,scope.companyId),canProcess:true});return;}
           const input=await jsonBody(req,64*1024);
@@ -599,11 +706,12 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
       const server=portalServer(portal,origin);server.requestTimeout=45000;server.headersTimeout=15000;
       await new Promise((yes,no)=>server.once('error',no).listen(port,'127.0.0.1',yes));servers.push(server);
     }
-  }catch(e){for(const srv of servers)srv.close();await backups.close();db.close();throw e;}
+  }catch(e){for(const srv of servers)srv.close();await addons.close();await backups.close();db.close();throw e;}
+  await addons.restore();
   runRecurring();planningTimer=setInterval(runRecurring,planningIntervalMs);planningTimer.unref();
   backups.tick();backupTimer=setInterval(backups.tick,backupIntervalMs);backupTimer.unref();
   return {mainUrl:'http://127.0.0.1:'+servers[0].address().port,workerUrl:'http://127.0.0.1:'+servers[1].address().port,
-    async close(){passwordWork.close();clearInterval(planningTimer);clearInterval(backupTimer);await Promise.all(servers.map(srv=>new Promise(r=>{srv.close(r);srv.closeIdleConnections();})));sessions.clear();await backups.close();db.close();}};
+    async close(){passwordWork.close();clearInterval(planningTimer);clearInterval(backupTimer);await Promise.all(servers.map(srv=>new Promise(r=>{srv.close(r);srv.closeIdleConnections();})));sessions.clear();await addons.close();await backups.close();db.close();}};
 }
 
 export {createSuite};
