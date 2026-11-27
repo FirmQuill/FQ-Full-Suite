@@ -83,6 +83,12 @@ export async function createModuleActivation({directory,verifierPath,clock=Date.
       modules:Object.fromEntries(modules.map(m=>[m,active&&current.modules.includes(m)])),
       status:invalid?'invalid saved activation':state,expiresAt:current?.expiresAt??null,notBefore:current?.notBefore??null};
   };
+  // Owner UI projection only: no code, identity, module scope, issuer or file paths.
+  const renewalNotice=()=>{
+    const now=clock(),state=temporal(current,now);
+    if(invalid||!current||current.expiresAt===undefined||!['active','expired'].includes(state))return null;
+    return {expiresAt:current.expiresAt,remainingMs:Math.max(0,current.expiresAt*1000-now)};
+  };
   const allows=mod=>modules.includes(mod)&&!!key&&temporal(current,clock())==='active'&&current.modules.includes(mod);
   async function activate(code,authorize){
     if(!key||!filename)block(409,'Host activation is not configured. Ask the host administrator to provision the public verifier.');
@@ -103,5 +109,5 @@ export async function createModuleActivation({directory,verifierPath,clock=Date.
     finally{writing=false;await unlink(tmp).catch(()=>{});}
     return status();
   }
-  return {status,allows,activate};
+  return {status,allows,activate,renewalNotice};
 }

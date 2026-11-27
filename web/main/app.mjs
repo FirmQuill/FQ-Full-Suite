@@ -1,4 +1,4 @@
-import {activationPanel,activationAction} from './activation-ui.mjs';
+import {activationPanel,activationAction,renderRenewalNotice} from './activation-ui.mjs';
 import {csvRecoveryPanel,csvRecoveryAction} from './csv-recovery-ui.mjs';
 import {mountContextualHelp} from '/shared/contextual-help-ui.mjs';
 import {backupContent,backupAction} from './backup-admin.mjs';
@@ -25,6 +25,7 @@ import {suiteContent,suiteAction} from './administration.mjs';
 const app=document.querySelector('#app'),dialog=document.querySelector('dialog'),notice=document.querySelector('#notice');
 const brand='<div class="brand"><img src="/shared/mark.svg" alt="">FirmQuill</div>';
 let session=null,companyId='',page='Overview',menu=false,busy=false,epoch=0;
+let renewalTimer,renewalReceivedAt=0;
 let auxiliary=null,loadGeneration=0,draftRequestId='',closePeriod='';
 let idleTimer,lastActivity=0;
 const idleLimit=5*60*1000;
@@ -38,7 +39,7 @@ function showError(error){
 }
 function closeModal(){dialog.close();dialog.replaceChildren();dialog.removeAttribute("aria-labelledby");dialog.onsubmit=null;dialog.onchange=null;}
 function signedOut(){
-  epoch++;loadGeneration++;clearTimeout(idleTimer);session=null;companyId='';page='Overview';menu=false;busy=false;auxiliary=null;filter.group='';closePeriod='';
+  epoch++;loadGeneration++;clearTimeout(idleTimer);clearTimeout(renewalTimer);session=null;companyId='';page='Overview';menu=false;busy=false;auxiliary=null;filter.group='';closePeriod='';
   closeModal();notice.textContent='';gate();
 }
 function endIdleSession(){
@@ -82,7 +83,7 @@ async function api(path,body){
 }
 function useSession(next){
   check(next?.user&&Array.isArray(next?.state?.companies),'The server returned an incomplete workspace. Sign in again.');
-  const old=session?.user?.id;session=next;
+  const old=session?.user?.id;session=next;renewalReceivedAt=performance.now();
   if(old!==next.user.id){epoch++;lastActivity=0;touch();page=auditPortal?'Inventory audit':'Overview';companyId='';filter.group='';auxiliary=null;}
   if(!next.state.companies.some(c=>c.id===companyId)){companyId=next.state.companies[0]?.id||'';filter.group='';}
   if(filter.group&&!next.state.groups.some(g=>g.id===filter.group))filter.group='';
@@ -137,6 +138,7 @@ function roleFilter(root){
   }
 }
 function render(){
+  clearTimeout(renewalTimer);
   if(!session){gate();return;}
   const s=session.state,user=session.user,c=s.companies.find(x=>x.id===companyId);
   const full=[...suitePages(),...(!auditPortal&&c&&(user.role==='owner'||user.areas?.includes('Reports'))?['Report builder']:[])];
@@ -168,8 +170,17 @@ function render(){
   if(page==='Payroll'&&!auditPortal&&c&&allowed(page)&&!['hr','payroll'].includes(user.role))body=panel('Free federal estimate','<p>The existing federal worksheet is an estimate only. It does not create, process or finalize payroll.</p>')+body;
   if(c?.projectScope==='permitted-records')body='<div class="callout"><p>These views and totals include only records permitted for your account. Ask the owner for a complete company close.</p></div>'+body;
   const picker=c?`<label for="company">Company</label><select id="company" aria-label="Active company" class="picker">${options(mapping(s.companies))}</select>`:'';
-  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><div class="sidebarfoot small">FirmQuill · Full Suite preview</div></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1>${page==='Overview'?'Workspace overview':esc(page)}</h1></div>${c&&page==='Overview'?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div><div class="error" role="alert"></div>${body}</div></div></div>`;
+  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><div class="sidebarfoot small">FirmQuill · Full Suite preview</div></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1>${page==='Overview'?'Workspace overview':esc(page)}</h1></div>${c&&page==='Overview'?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
   mountContextualHelp(app.querySelector('#contextual-help'),{page,companyId,api});
+  const renewalSlot=app.querySelector('#module-renewal');
+  if(renewalSlot){
+    const paint=()=>{
+      if(!renewalSlot.isConnected)return;
+      const delay=renderRenewalNotice(renewalSlot,session.moduleRenewal,performance.now()-renewalReceivedAt,page==='Module activation');
+      if(delay!==null)renewalTimer=setTimeout(paint,Math.max(1,Math.min(delay,2147483647)));
+    };
+    paint();
+  }
   if(c)app.querySelector('#company').value=companyId;
   if(page==='Reports'&&c)app.querySelector('[name=group]').value=filter.group;
   roleFilter(app);

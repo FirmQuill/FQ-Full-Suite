@@ -102,8 +102,9 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     const {state,revision}=readBooks(db);
     const features=s.portal==='worker'?workerFeatures(db,user):[];
     const time=s.portal==='worker'?workerView(db,user,state):null;
+    const renewal=s.portal==='main'&&user.role==='owner'?activation.renewalNotice():null;
     return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,...(features.includes('Drives')?{driveCompanyId:user.assignments[0]}:{}),branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null,leave:features.includes('Time off')?myLeave(db,user,state):null}:
-      {user:{...publicUser(user),areas:accountAreas(db,user),workspaces:workspacePagesFor(user,state)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
+      {user:{...publicUser(user),areas:accountAreas(db,user),workspaces:workspacePagesFor(user,state)},csrf:s.csrf,state:scoped(user,state,db),revision,...(renewal?{moduleRenewal:renewal}:{}),portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
   function contextualScope(user,portal,page,companyId,state){
     if(!(portal==='worker'?workerHelpPages:mainHelpPages).has(page))return false;

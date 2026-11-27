@@ -23,3 +23,17 @@ export function activationAction(type,{api,formModal,closeModal,refresh,toast}){
     });
   return true;
 }
+
+const fourteenDays=14*86400000; // Presentation threshold only; never controls permissions.
+export function renderRenewalNotice(slot,renewal,elapsed=0,alreadyOnActivationPage=false){
+  const remaining=renewal.remainingMs-elapsed;
+  if(remaining>fourteenDays){slot.replaceChildren();return remaining-fourteenDays;}
+  const date=esc(when(renewal.expiresAt));
+  const expired=remaining<=0,title=expired?'Paid modules expired':'Paid modules expire soon';
+  slot.innerHTML='<section class="callout warn" aria-label="'+title+'"><p><strong>'+title+'.</strong> '+(expired?
+    'Your activation ended on '+date+'. Previously activated paid features are now locked. Your authorized payroll history and downloads are still available.':
+    'Your activation ends on '+date+'. Renew before then to keep paid modules available.')+
+    ' Ask your issuer for a renewed code and enter it in Module activation.</p>'+
+    (alreadyOnActivationPage?'':btn('nav','Open Module activation','Module activation'))+'</section>';
+  return expired?null:remaining;
+}

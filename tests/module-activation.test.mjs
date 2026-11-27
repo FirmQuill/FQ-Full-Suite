@@ -82,6 +82,7 @@ test('live endpoints enforce owner activation, narrowly unlock features and keep
  assert.equal((await get('module-activation')).status,428);await post('terms',fixtureAgreement);
  assert.equal((await get('module-activation',manager)).status,403);
  assert.equal((await request(workerUrl,'module-activation',{session:worker})).status,404);
+ assert.equal(Object.hasOwn((await get('session')).result,'moduleRenewal'),false);
  const status=await get('module-activation');assert.equal(status.result.edition,edition);assert.equal(status.result.installationId,x.fx.id);
  assert.equal((await get(route,payroll)).result.canProcess,false);
  assert.equal((await get('support/info')).result.scope,'public-setup-only');assert.deepEqual((await get(context)).result,{available:false});assert.equal((await get(legacy)).status,404);
@@ -91,6 +92,10 @@ test('live endpoints enforce owner activation, narrowly unlock features and keep
  assert.equal((await post('module-activation',{code:'not-valid'})).status,400);
  const expiringCode=x.fx.mint({expiresAt:second+60,modules:['manual-payroll','private-support']});
  const activated=await post('module-activation',{code:expiringCode});assert.equal(activated.status,200);assert.equal(activated.result.status,'active');assert.ok(!JSON.stringify(activated).includes(expiringCode));
+ const projection=(await get('session')).result.moduleRenewal;
+ assert.deepEqual(projection,{expiresAt:second+60,remainingMs:60000});assert.equal(Object.keys(projection).length,2);
+ for(const account of [payroll,other,manager])assert.equal(Object.hasOwn((await get('session',account)).result,'moduleRenewal'),false);
+ assert.equal(Object.hasOwn((await request(workerUrl,'session',{session:worker})).result,'moduleRenewal'),false);
  assert.equal((await get('support/info')).result.scope,'private-customer-manual');assert.equal((await get('support/info?scope=public')).result.scope,'public-setup-only');
  assert.match((await get(legacy)).result.body,/PRIVATE_SYNTHETIC_HELP/);assert.match((await get(context)).result.body,/PRIVATE_SYNTHETIC_CONTEXT/);
  assert.equal((await get(legacy,manager)).status,404);
@@ -102,6 +107,7 @@ test('live endpoints enforce owner activation, narrowly unlock features and keep
  assert.ok(stub);
  x.advance(60000);
  assert.equal((await get('module-activation')).result.status,'expired');
+ assert.equal((await get('session')).result.moduleRenewal.remainingMs,0);
  assert.equal((await get('support/info')).result.scope,'public-setup-only');assert.equal((await get(legacy)).status,404);
  assert.deepEqual((await get(context)).result,{available:false});
  const locked=await get(route,payroll);assert.equal(locked.result.data.runs[0].id,'fixture-payroll');assert.equal(locked.result.canProcess,false);
@@ -127,21 +133,40 @@ test('actual owner portal retains Payroll and Banking while locked; signed activ
  const browser=await chromium.launch({executablePath:executable,headless:true});t.after(()=>browser.close());
  const page=await browser.newPage({viewport:{width:1440,height:960}}),errs=[],remote=[];
  page.on('pageerror',e=>errs.push(String(e)));page.on('request',r=>{if(!r.url().startsWith(mainUrl))remote.push(r.url());});
+ await page.clock.install();
  await page.goto(mainUrl);await page.locator('#login [name=username]').fill('fixture-owner');await page.locator('#login [name=password]').fill(pass);
  const b=name=>page.getByRole('button',{name,exact:true}).first(),nav=name=>page.locator('nav [data-act="nav"][data-key="'+name+'"]').first().click();
  await b('Sign in').click();await b('I agree to the Terms of Service').click();
  await nav('Banking');await b('Import CSV').waitFor();await nav('Payroll');
+ assert.equal(await page.locator('#module-renewal').count(),0);
  await page.getByText(/Processing is locked/).waitFor();await page.getByRole('heading',{name:'Free federal estimate'}).waitFor();
  assert.equal(await b('Add rule version').count(),0);
  const shots=process.env.FIRMQUILL_ACTIVATION_SHOTS;
  if(shots){await mkdir(shots,{recursive:true});await page.screenshot({path:join(shots,'01-locked-payroll.png')});}
  await nav('Module activation');await b('Enter activation code').click();
+ const code=page.locator('dialog[open] [name=code]');
  await page.locator('dialog[open] [name=code]').fill('bad');await b('Activate modules').click();await page.getByText(/invalid for this Full Suite installation/).waitFor();
- await page.locator('dialog[open] [name=code]').fill(x.fx.mint({expiresAt:second+60}));await b('Activate modules').click();
+ await code.fill(x.fx.mint({expiresAt:second+15*86400}));await b('Activate modules').click();
+ await page.getByText('Activation status: active.',{exact:true}).waitFor();
+ assert.equal(await page.getByText('Paid modules expire soon.',{exact:true}).count(),0);
+ x.advance(86400000);await b('Refresh').click();await page.getByText('Paid modules expire soon.',{exact:true}).waitFor();
+ if(shots)await page.screenshot({path:join(shots,'01-approaching-renewal.png')});
+ await b('Enter activation code').click();await code.fill(x.fx.mint({expiresAt:second+86400+60}));await b('Activate modules').click();
  await page.getByText('Activation status: active.',{exact:true}).waitFor();await page.locator('dialog[open]').waitFor({state:'hidden'});
  if(shots)await page.screenshot({path:join(shots,'02-active-module-status.png')});
  await nav('Payroll');await b('Add rule version').waitFor();
- x.advance(60000);await b('Refresh').click();await page.getByText(/Processing is locked/).waitFor();
+ assert.equal(await page.getByText('Paid modules expire soon.',{exact:true}).count(),1);
+ assert.equal(await page.locator('#module-renewal').getByText(x.fx.id).count(),0);
+ x.advance(60000);await page.clock.fastForward(60000);
+ await page.getByText('Paid modules expired.',{exact:true}).waitFor(); // Existing view changes without a new network call or reloading its form.
+ await b('Refresh').click();await page.getByText(/Processing is locked/).waitFor();
+ await page.locator('#module-renewal').getByText(/history and downloads are still available/).waitFor();
+ if(shots)await page.screenshot({path:join(shots,'02-expired-read-only-renew.png')});
  await nav('Setup help');await page.getByRole('heading',{name:'Public setup guide',exact:true}).waitFor();
+ await b('Open Module activation').click();await page.getByText('Activation status: expired.',{exact:true}).waitFor();
+ await b('Enter activation code').click();await code.fill(x.fx.mint());await b('Activate modules').click();await page.locator('dialog[open]').waitFor({state:'hidden'});await page.getByText('Activation status: active.',{exact:true}).waitFor();
+ assert.equal(await page.locator('#module-renewal').count(),0);
+ await b('Sign out').click();assert.equal(await page.locator('#module-renewal').count(),0);
+
  assert.deepEqual(errs,[]);assert.deepEqual(remote,[]);
 });
