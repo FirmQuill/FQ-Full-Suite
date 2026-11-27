@@ -1,3 +1,4 @@
+import {initializeCompanyKnowledge} from './company-knowledge.mjs';
 import {validatePlanning} from './shared/planning-core.mjs';
 import {migrateOwnerDesk} from './desk-migration.mjs';
 import {initializeDepartments,ensureDepartments} from './departments.mjs';
@@ -12,7 +13,7 @@ import {initializeRecords} from './records.mjs';
 import {initializeBenefits} from './benefits.mjs';
 import {initializeIdentity} from './identity.mjs';
 import {initializeBranding} from './branding.mjs';
-import {initializeAccess,ensureWorkerAccounts,accountAreas,saveAreas,ERP_AREAS,requireActionArea,projectErpState} from './access.mjs';
+import {initializeAccess,ensureWorkerAccounts,accountAreas,saveAreas,DEFAULT_ERP_AREAS,requireActionArea,projectErpState} from './access.mjs';
 
 const kdf=promisify(scrypt);
 const empty={format:'fieldledger.erp',edition:'Lite',schema:1,currency:'USD',companies:[],groups:[]};
@@ -41,6 +42,7 @@ function openStore(filename){
       initializeIdentity(db);
       initializeBranding(db);
       initializeAccess(db);
+      initializeCompanyKnowledge(db);
       initializeDepartments(db);
       initializeProjects(db);
       initializeAssets(db);
@@ -85,6 +87,13 @@ async function passwordMatches(password,encoded){
   const [salt,hex]=encoded.split(':');const key=await kdf(password,salt,32,{N:32768,r:8,p:1,maxmem:64*1024*1024});
   return timingSafeEqual(key,Buffer.from(hex,'hex'));
 }
+function hasCollaborationHistory(db,id){
+  const hasTable=name=>!!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?").get(name);
+  return (hasTable('collaboration_membership_history')&&!!db.prepare('SELECT 1 FROM collaboration_membership_history WHERE account_id=?').get(id))||
+    (hasTable('collaboration_threads')&&!!db.prepare("SELECT 1 FROM collaboration_threads WHERE kind='direct' AND (scope_a=? OR scope_b=?) LIMIT 1").get(id,id))||
+    (hasTable('collaboration_messages')&&!!db.prepare('SELECT 1 FROM collaboration_messages WHERE sender=? LIMIT 1').get(id))||
+    (hasTable('drive_entries')&&!!db.prepare("SELECT 1 FROM drive_entries WHERE uploader=? OR (scope='personal' AND scope_id=?) LIMIT 1").get(id,id));
+}
 function putUser(db,actor,input,hashed,{bootstrap=false}={}){
   if(!bootstrap)owner(actor);
   let existing=input.id?db.prepare('SELECT * FROM accounts WHERE id=?').get(input.id):null;
@@ -101,6 +110,9 @@ function putUser(db,actor,input,hashed,{bootstrap=false}={}){
   const {state}=readBooks(db);requireThat(Array.isArray(assignments)&&assignments.every(k=>state.companies.some(c=>c.id===k))&&new Set(assignments).size===assignments.length,400,'Select valid companies.');
   const employeeId=role==='worker'?input.employeeId:(assignments?.length===1&&state.companies.find(c=>c.id===assignments[0])?.employees.some(p=>p.id===input.employeeId)?input.employeeId:'');
   if(employeeId)requireThat(assignments.length===1&&state.companies.find(c=>c.id===assignments[0])?.employees.some(p=>p.id===employeeId),400,'A linked employee must belong to the assigned company.');
+  if(existing&&(employeeId!==existing.employeeId||(existing.employeeId&&JSON.parse(existing.assignments)[0]!==assignments[0]))){
+    requireThat(!hasCollaborationHistory(db,existing.id),409,'This login has collaboration history. Create a separate login for a different employee.');
+  }
   if(existing?.role==='worker'&&(employeeId!==existing.employeeId||JSON.stringify(assignments)!==existing.assignments)){
     requireThat(!db.prepare('SELECT 1 FROM worker_shifts WHERE user_id=? AND ended IS NULL').get(existing.id),409,'Close the original worker shift before changing its employee or company assignment.');
   }
@@ -116,7 +128,7 @@ function putUser(db,actor,input,hashed,{bootstrap=false}={}){
   const id=existing?.id||randomUUID();
   db.prepare(`INSERT INTO accounts VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET username=excluded.username,name=excluded.name,role=excluded.role,assignments=excluded.assignments,employeeId=excluded.employeeId,active=excluded.active,hash=excluded.hash,authVersion=excluded.authVersion`)
     .run(id,username,name,role,JSON.stringify(assignments),employeeId,Number(active),hashed||existing.hash,(existing?.authVersion||0)+1);
-  if(!['owner','worker'].includes(role))saveAreas(db,id,input.areas??(existing?accountAreas(db,{id,role}):ERP_AREAS));
+  if(!['owner','worker'].includes(role))saveAreas(db,id,input.areas??(existing?accountAreas(db,{id,role}):DEFAULT_ERP_AREAS));
   audit(db,actor||{id},assignments.length===1?assignments[0]:'','access',JSON.stringify({accountId:id,event:existing?'updated':'created',previousRole:existing?.role||null,role,active,assignments,areas:role==='worker'?[]:accountAreas(db,{id,role})}));
   return id;
 }

@@ -6,7 +6,7 @@ import {identityContent,identityAction,employeeAccessContent} from './identity-a
 import {connectedContent,connectedAction} from './connected-admin.mjs';
 
 const roleLabels={owner:'Owner',manager:'Manager',bookkeeper:'Bookkeeper',viewer:'Viewer',worker:'Worker',hr:'Human Resources',payroll:'Payroll'};
-const erpAreas=['Overview','Directory','Sales','Purchasing','Jobs & time','Warehouse','Assembly','Fixed assets','Accounting','Banking','Reports','Payroll','History','Company setup','Approvals','Audit trail','Employee records','Benefits administration','Identity connectors'];
+const erpAreas=['Overview','Directory','Sales','Purchasing','Jobs & time','Warehouse','Assembly','Fixed assets','Accounting','Banking','Reports','Payroll','History','Company setup','Approvals','Audit trail','Employee records','Benefits administration','Identity connectors','Company knowledge'];
 const labels={cash:'Cash',receivables:'Receivables',payables:'Payables',inventory:'Inventory',netIncome:'Net income',trialDifference:'Trial balance difference'};
 function selected(name,caption,pairs,current){
   return `<label>${esc(caption)}<select name="${esc(name)}">${pairs.map(([value,label])=>`<option value="${esc(value)}"${value===current?' selected':''}>${esc(label)}</option>`).join('')}</select></label>`;
@@ -65,7 +65,7 @@ function editUser(user,ctx){
     selected('role','Role',Object.entries(roleLabels).filter(([r])=>user?.role==='worker'?r==='worker':r!=='worker'),user?.role||'viewer')+
     `<fieldset data-company-assignments><legend>Assigned companies</legend>${choices('assignments',mapping(companies),user?.assignments||[])}</fieldset>`+
     `<label>Linked employee (optional for ERP)<select name="employeeId"><option value="">No employee link</option>${companies.map(c=>`<optgroup label="${esc(c.name)}">${c.employees.map(p=>`<option value="${esc(p.id)}"${p.id===user?.employeeId?' selected':''}>${esc(p.name)}</option>`).join('')}</optgroup>`).join('')}</select></label>`+
-    `<fieldset data-erp-areas><legend>Permitted ERP areas</legend>${choices('areas',erpAreas.map(a=>[a,a]),user?.areas||[])}</fieldset>`+
+    `<fieldset data-erp-areas><legend>Permitted ERP areas</legend>${choices('areas',(ctx.auxiliary?.erpAreaOptions||erpAreas).map(a=>[a,a]),user?.areas||[])}</fieldset>`+
     selected('active','Account access',[['yes','Enabled'],['no','Disabled']],user?.active===false?'no':'yes');
   formModal(user?'Edit individual account':'Add individual account',fields,user?'Save account':'Create account',async(v,f)=>{
     const assignments=f.getAll('assignments'),worker=v.role==='worker';

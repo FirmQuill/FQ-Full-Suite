@@ -1,8 +1,9 @@
 import {randomUUID} from 'node:crypto';
 
-export const ERP_AREAS=['Overview','Directory','Sales','Purchasing','Jobs & time','Warehouse','Assembly','Fixed assets','Accounting','Banking','Reports','Payroll','History','Company setup','Approvals','Audit trail','Employee records','Benefits administration','Identity connectors'];
+export const DEFAULT_ERP_AREAS=['Overview','Directory','Sales','Purchasing','Jobs & time','Warehouse','Assembly','Fixed assets','Accounting','Banking','Reports','Payroll','History','Company setup','Approvals','Audit trail','Employee records','Benefits administration','Identity connectors'];
+export const ERP_AREAS=[...DEFAULT_ERP_AREAS,'Drives','Messages','Company knowledge'];
 const DEFAULT_WORKER_FEATURES=['Time','Pay','Reviews','Benefits','My Profile','Contacts'];
-export const WORKER_FEATURES=[...DEFAULT_WORKER_FEATURES,'Time off'];
+export const WORKER_FEATURES=[...DEFAULT_WORKER_FEATURES,'Time off','Company knowledge','Messages','Drives'];
 const fail=(ok,message,status=403)=>{if(!ok)throw Object.assign(Error(message),{status});};
 export function initializeAccess(db){
   db.exec(`CREATE TABLE IF NOT EXISTS account_grants(account_id TEXT PRIMARY KEY REFERENCES accounts(id),areas TEXT NOT NULL);
@@ -10,7 +11,7 @@ export function initializeAccess(db){
     CREATE TABLE IF NOT EXISTS employee_portal_flags(company TEXT NOT NULL,employee TEXT NOT NULL,features TEXT NOT NULL,PRIMARY KEY(company,employee));`);
   // Preserve the scope of existing ERP accounts during an upgrade.
   for(const r of db.prepare("SELECT id,employeeId,assignments,active FROM accounts WHERE role NOT IN ('worker','owner')").all()){
-    db.prepare('INSERT OR IGNORE INTO account_grants VALUES(?,?)').run(r.id,JSON.stringify(ERP_AREAS));
+    db.prepare('INSERT OR IGNORE INTO account_grants VALUES(?,?)').run(r.id,JSON.stringify(DEFAULT_ERP_AREAS));
     const companies=JSON.parse(r.assignments);
     if(r.employeeId&&companies.length===1)db.prepare('INSERT OR IGNORE INTO employee_erp_flags VALUES(?,?,?,?)').run(companies[0],r.employeeId,r.active,db.prepare('SELECT areas FROM account_grants WHERE account_id=?').get(r.id).areas);
   }

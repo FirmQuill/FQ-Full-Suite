@@ -1,3 +1,4 @@
+import {ftpsOptionsFromEnv} from './ftps.mjs';
 import {mkdir,stat,readdir,readFile} from 'node:fs/promises';
 import {resolve,dirname,relative,isAbsolute} from 'node:path';
 import {fileURLToPath} from 'node:url';
@@ -72,7 +73,7 @@ async function main(){
   const mainPort=Number(process.env.FIRMQUILL_MAIN_PORT||4179),workerPort=Number(process.env.FIRMQUILL_WORKER_PORT||4180);
   requireThat([mainPort,workerPort].every(p=>Number.isInteger(p)&&p>=1&&p<=65535)&&mainPort!==workerPort,400,'Select two distinct TCP ports.');
   const supportOptions=process.env.FIRMQUILL_SUPPORT_DOCS?{documentationRoot:process.env.FIRMQUILL_SUPPORT_DOCS}:{};
-  const suite=await createSuite({database,mainPort,workerPort,mainOrigin,workerOrigin,supportOptions});
+  const suite=await createSuite({database,mainPort,workerPort,mainOrigin,workerOrigin,supportOptions,ftpsOptions:ftpsOptionsFromEnv()});
   console.log('FirmQuill Full Suite   '+(mainOrigin||suite.mainUrl)+'/\nFirmQuill Worker       '+(workerOrigin||suite.workerUrl)+'/');
   let stopping=false;async function stop(){if(stopping)return;stopping=true;await suite.close();}
   process.once('SIGINT',stop);process.once('SIGTERM',stop);

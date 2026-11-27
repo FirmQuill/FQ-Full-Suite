@@ -1,3 +1,7 @@
+import {companyKnowledgeView,companyKnowledgeCommand} from './company-knowledge.mjs';
+import {createPrivateFtps} from './ftps.mjs';
+import {initializeCollaborationGroups,groupAdminView,groupAdminCommand} from './collaboration-groups.mjs';
+import {initializeMessaging,messagingView,messagingCommand,latestMessageId} from './messaging.mjs';
 import {catchUpPlanning,localPlanningDay,planningCommand,planningOf,planningSummary} from './shared/planning-core.mjs';
 import {initializeManualPayroll,manualPayrollView,manualPayrollStoreCommand,manualPayrollPortableState} from './manual-payroll-store.mjs';
 import {portableDeskState,portableDeskReport} from './portable-desk.mjs';
@@ -5,6 +9,7 @@ import {ownerDeskMigrationReports} from './desk-migration.mjs';
 import {departmentView,departmentCommand} from './departments.mjs';
 import {projectView,projectCommand,visibleProjectJobs,projectBusinessState} from './project-workspace.mjs';
 import {assetsView,assetsCommand} from './assets-workspace.mjs';
+import {createDriveService,createDriveRoutes} from './file-drives.mjs';
 import {createServer} from 'node:http';
 import {readFile} from 'node:fs/promises';
 import {randomBytes,createHash} from 'node:crypto';
@@ -26,8 +31,8 @@ import {initializeTeamWorkflows,teamPages,purchasingView,purchasingCommand,myLea
 const token=()=>randomBytes(32).toString('base64url');
 const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
-const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs']);
-const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','audit.html']);
+const common=new Set(['app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs']);
+const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','company-knowledge.mjs','private-ftps-ui.mjs','audit.html']);
 const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
 const deny=(n,msg)=>requireThat(false,n,msg);
 const publicUser=u=>{const {authVersion,...fields}=u;return {...fields,version:authVersion};};
@@ -41,15 +46,19 @@ async function jsonBody(req,max){
   return data;
 }
 function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHeader('Content-Type')||'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
-async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},planningClock=localPlanningDay,planningIntervalMs=60_000}){
+async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},ftpsOptions={},ftpsTransport,driveFactory,planningClock=localPlanningDay,planningIntervalMs=60_000}){
   const db=openStore(database),sessions=new Map(),attempts=new Map();
   initializeTeamWorkflows(db);
+  initializeCollaborationGroups(db);
+  initializeMessaging(db);
   initializeManualPayroll(db);
+  const driveService=createDriveService(db), driveRoutes=createDriveRoutes(driveService);
   if(termsVersion===legacyAgreement.version&&termsHash===legacyAgreement.hash){
     db.prepare('INSERT OR IGNORE INTO terms_acceptance_hashes(account_id,version,content_hash,accepted_at) SELECT account_id,version,?,accepted_at FROM terms_acceptances WHERE version=?').run(termsHash,termsVersion);
   }
   const agents=createAgentService({db});
   const support=createSupportService(supportOptions);
+  const privateFtps=createPrivateFtps({options:ftpsOptions,drive:driveFactory?driveFactory(db):driveService,transport:ftpsTransport,onSuccess:(user,company,detail)=>audit(db,user,company,'private-ftps',detail)});
   const identity=createIdentityService({db,database,readBooks,saveBooks,passwordHash,putUser,...identityOptions});
   const dummyHash=await passwordHash(token()),servers=[];
   let expensive=0,planningTimer;
@@ -67,20 +76,20 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     session.until=Date.now()+30*60000;return u;
   }
   function workspacePagesFor(user,state){
-    if(user.role==='owner')return ['Departments','Project tracker','Assets & pallets','Inventory audit',...teamPages(db,user)];
+    if(user.role==='owner')return ['Departments','Project tracker','Assets & pallets','Inventory audit','Company knowledge','Messages','Collaboration groups',...teamPages(db,user)];
     const pages=[],departments=departmentView(db,user,state),projects=projectView(db,user,state);
     if(departments.workspaces.length)pages.push('Departments');
     if(projects.projects.length||departments.workspaces.some(w=>w.rights.includes('manage')))pages.push('Project tracker');
     const rights=new Set();for(const c of state.companies){try{for(const right of assetsView(db,user,state,{companyId:c.id}).rights)rights.add(right);}catch{}}if(['view','manage'].some(r=>rights.has(r)))pages.push('Assets & pallets');
     if(['audit','approve'].some(r=>rights.has(r)))pages.push('Inventory audit');
-    return [...pages,...teamPages(db,user)];
+    return [...pages,...(user.assignments.length&&accountAreas(db,user).includes('Company knowledge')?['Company knowledge']:[]),...teamPages(db,user),...(accountAreas(db,user).includes('Messages')&&state.companies.some(c=>user.assignments.includes(c.id))?['Messages']:[])];
   }
   function snapshot(user,s,extras={}){
     if(!hasAccepted(user))return {termsRequired:termsVersion,csrf:s.csrf};
     const {state,revision}=readBooks(db);
     const features=s.portal==='worker'?workerFeatures(db,user):[];
     const time=s.portal==='worker'?workerView(db,user,state):null;
-    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null,leave:features.includes('Time off')?myLeave(db,user,state):null}:
+    return s.portal==='worker'?{user:{id:user.id,name:user.name,role:'worker'},csrf:s.csrf,features,...(features.includes('Drives')?{driveCompanyId:user.assignments[0]}:{}),branding:workerBranding(db,state,user.assignments[0]),data:features.includes('Time')?time:{company:time.company,employee:time.employee,timezone:time.timezone},records:workerRecords(db,user,(()=>{const r=recordsView(db,user,state),allowed=new Set(state.companies.flatMap(c=>visibleProjectJobs(db,user,c)).map(j=>j.id));if(r.jobs)r.jobs=r.jobs.filter(j=>allowed.has(j.id));return r;})()),benefits:features.includes('Benefits')?benefitsView(db,user,state):null,leave:features.includes('Time off')?myLeave(db,user,state):null}:
       {user:{...publicUser(user),areas:accountAreas(db,user),workspaces:workspacePagesFor(user,state)},csrf:s.csrf,state:scoped(user,state,db),revision,portalLinks:{main:mainOrigin||'http://127.0.0.1:'+servers[0]?.address()?.port,worker:workerOrigin||'http://127.0.0.1:'+servers[1]?.address()?.port},...extras};
   }
   function hasAccepted(user){return !!db.prepare('SELECT 1 FROM terms_acceptance_hashes WHERE account_id=? AND version=? AND content_hash=?').get(user.id,termsVersion,termsHash);}
@@ -103,7 +112,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           if(path.startsWith('/legal/')){
             name=path.slice(7);requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');root='web/legal/';
           }else if(path.startsWith('/shared/')){
-            name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png'].includes(name)),404,'File unavailable.');root='shared/';
+            name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs'].includes(name)),404,'File unavailable.');root='shared/';
           }else requireThat((portal==='main'?mainFiles:workerFiles).has(name),404,'File unavailable.');
           const bytes=await readFile(new URL('./'+root+name,import.meta.url));res.writeHead(200,{'Content-Type':mime[name.split('.').pop()]});res.end(req.method==='HEAD'?undefined:bytes);return;
         }
@@ -169,6 +178,32 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           send(res,200,snapshot(account,s));return;
         }
         requireThat(hasAccepted(u),428,'Read and agree to the Terms of Service first.');
+        if(path==='/api/company-knowledge'){
+          const companyId=url.searchParams.get('companyId')||undefined;
+          if(post){
+            requireThat(portal==='main',403,'Employee portal is read-only.');
+            const input=await jsonBody(req,192*1024);
+            const result=tx(db,()=>{
+              const active=userFor(s,portal),value=companyKnowledgeCommand(db,active,readBooks(db).state,companyId,input);
+              audit(db,active,companyId,'company knowledge '+value.operation,value.id+(value.version?' · version '+value.version:''));
+              return value;
+            });send(res,200,{result});return;
+          }
+          send(res,200,companyKnowledgeView(db,u,readBooks(db).state,{companyId,id:url.searchParams.get('id'),q:url.searchParams.get('q'),version:url.searchParams.get('version')}));return;
+        }
+        if(path==='/api/private-ftps'){
+          requireThat(portal==='main',404,'Endpoint unavailable.');
+          const current=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const user=userFor(s,portal);requireThat(hasAccepted(user),428,'Read and agree to the Terms of Service first.');return user;};
+          if(post){const body=await jsonBody(req,4096);send(res,200,await privateFtps.command(current,body));}
+          else send(res,200,privateFtps.status(u,{companyId:url.searchParams.get('companyId'),groupId:url.searchParams.get('groupId'),folderId:url.searchParams.get('folderId')}));
+          return;
+        }
+        if(path.startsWith('/api/drives/')){
+          await driveRoutes({req,res,url,user:u,readJson:max=>jsonBody(req,max),reauthorize:()=>{
+            requireThat(sessions.get(sid)===s,401,'Sign in again.');
+            const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return active;
+          }});return;
+        }
         if(path==='/api/support/info'&&!post){send(res,200,await support.info());return;}
         if(path==='/api/support/search'&&!post){send(res,200,await support.search(url.searchParams.get('q')||''));return;}
         if(path==='/api/support/article'&&!post){send(res,200,await support.article(url.searchParams.get('id')));return;}
@@ -195,6 +230,24 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(portal==='main'&&path==='/api/agent-admin'&&!post){send(res,200,agents.view(u));return;}
         if(portal==='main'&&path==='/api/agent-admin/action'&&post){const p=await jsonBody(req,64*1024);send(res,200,agents.command(userFor(s,portal),p));return;}
         const {state:workforceState}=readBooks(db),scope={companyId:url.searchParams.get('companyId')||undefined,employeeId:url.searchParams.get('employeeId')||undefined};
+        if(path==='/api/collaboration/messages'||portal==='main'&&path==='/api/collaboration/groups'){
+          const messages=path.endsWith('/messages');
+          const companyId=portal==='worker'?u.assignments[0]:scope.companyId;
+          const params={companyId,state:workforceState};
+          if(!post){
+            send(res,200,messages?messagingView(db,u,params,{threadId:url.searchParams.get('threadId'),before:url.searchParams.get('before')}):groupAdminView(db,u,params));
+            return;
+          }
+          const p=await jsonBody(req,48*1024);
+          requireThat(sessions.get(sid)===s,401,'Sign in again.');
+          const result=tx(db,()=>{
+            const active=userFor(s,portal);
+            requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
+            const fresh={companyId:portal==='worker'?active.assignments[0]:companyId,state:readBooks(db).state};
+            return messages?messagingCommand(db,active,fresh,p.action):groupAdminCommand(db,active,fresh,p.action,{latestMessageId:latestMessageId(db)});
+          });
+          send(res,200,result);return;
+        }
         if(portal==='main'&&['/api/team/purchasing','/api/team/time-off'].includes(path)){
           const purchasing=path.endsWith('/purchasing');
           if(!post){send(res,200,purchasing?purchasingView(db,u,workforceState,scoped(u,workforceState,db),scope.companyId):reviewLeave(db,u,workforceState,scope.companyId));return;}
@@ -270,7 +323,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           send(res,200,snapshot(active,s));return;
         }
         if(!post){
-          if(path==='/api/admin/users'){owner(u);send(res,200,{users:db.prepare('SELECT * FROM accounts ORDER BY name,username').all().map(r=>({...publicUser(safeUser(r)),areas:accountAreas(db,safeUser(r)),configured:!!r.hash&&!r.hash.startsWith('!pending-invite:')})),employeeErp:db.prepare('SELECT * FROM employee_erp_flags').all().map(r=>({...r,enabled:!!r.enabled,areas:JSON.parse(r.areas)})),employeeFeatures:db.prepare('SELECT * FROM employee_portal_flags').all().map(r=>({...r,features:JSON.parse(r.features)}))});return;}
+          if(path==='/api/admin/users'){owner(u);send(res,200,{workerFeatureOptions:WORKER_FEATURES,erpAreaOptions:ERP_AREAS,users:db.prepare('SELECT * FROM accounts ORDER BY name,username').all().map(r=>({...publicUser(safeUser(r)),areas:accountAreas(db,safeUser(r)),configured:!!r.hash&&!r.hash.startsWith('!pending-invite:')})),employeeErp:db.prepare('SELECT * FROM employee_erp_flags').all().map(r=>({...r,enabled:!!r.enabled,areas:JSON.parse(r.areas)})),employeeFeatures:db.prepare('SELECT * FROM employee_portal_flags').all().map(r=>({...r,features:JSON.parse(r.features)}))});return;}
           if(path==='/api/approvals'){requireArea(db,u,'Approvals');send(res,200,{approvals:approvalList(db,u)});return;}
           if(path==='/api/audit'){requireArea(db,u,'Audit trail');send(res,200,{events:auditEvents(db,u)});return;}
           deny(404,'Endpoint unavailable.');

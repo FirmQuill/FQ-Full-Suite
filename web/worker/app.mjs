@@ -1,4 +1,7 @@
+import {employeeKnowledgeContent} from '/shared/knowledge-content.mjs';
+import {mountDrive} from '/shared/file-drive-ui.mjs';
 import {openAccount} from '/legal/account.mjs';
+import {messagingContent,chatForm,loadConversation,messagesUrl} from '/shared/messaging-ui.mjs';
 import {selfserviceContent,selfserviceSubmit} from './selfservice.mjs';
 const app = document.querySelector('#app');
 const notice = document.querySelector('#notice');
@@ -11,7 +14,8 @@ function showBrand(value){
   document.title=name+' · Employee portal';
 }
 brandLogo.addEventListener('error',()=>{brandLogo.hidden=true;});
-let session, busy = false, noticeTimer,tab='Home',supportScope='public-setup-only';
+let chat=null;
+let session, busy = false, noticeTimer,tab='Home',supportScope='public-setup-only',knowledge=null,knowledgeQuery='';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
 function stamp(value, zone) {
   return new Intl.DateTimeFormat('en-US', {timeZone:zone, month:'short', day:'numeric', year:'numeric', hour:'numeric', minute:'2-digit', timeZoneName:'short'}).format(new Date(value));
@@ -21,7 +25,7 @@ function say(message) {
   noticeTimer = setTimeout(() => {notice.textContent='';}, 5500);
 }
 function login() {
-  session = null;
+  session = null;knowledge=null;knowledgeQuery='';chat=null;tab='Home';
   showBrand(null);
   const setup=new URLSearchParams(location.hash.slice(1)).get('setup');
   if(setup){app.innerHTML='<section class="login"><h1>Set up your employee login</h1><form id="setup"><label>Choose your password<input type="password" name="password" minlength="12" autocomplete="new-password" required></label><label>Confirm password<input type="password" name="confirm" minlength="12" autocomplete="new-password" required></label><p class="error" role="alert"></p><button class="primary">Activate my login</button></form></section>';return;}
@@ -57,20 +61,33 @@ function render() {
   if(new URLSearchParams(location.hash.slice(1)).has('setup')){login();return;}
   const d=session.data, open=d.openShift;
   const features=session.features||['Time','Pay','Reviews','Benefits','My Profile','Contacts'];
-  if(!['Home','Setup help'].includes(tab)&&!features.includes(tab))tab='Home';
+  if(!['Home','Setup help'].includes(tab)&&!features.includes(tab)){tab='Home';chat=null;}
   const punch = open ? `<p>${esc(open.job)} · Started ${esc(stamp(open.start, open.zone))}</p><form id="clock-out"><p class="error" role="alert"></p><button class="primary">Clock out</button></form>` :
     d.jobs?.length ? `<form id="clock-in"><label>Job<select name="jobId" required>${d.jobs.map(j=>'<option value="'+esc(j.id)+'">'+esc(j.name)+'</option>').join('')}</select></label><p class="error" role="alert"></p><button class="primary">Clock in</button></form>` : '<p>Ask a manager to create a job before clocking in.</p>';
   const rows=(d.time||[]).slice().sort((a,b)=>b.date.localeCompare(a.date)).map(t=>`<tr><td>${esc(t.date)}</td><td>${esc(t.job)}</td><td>${esc(t.minutes)}</td><td>${t.approved?'Approved':'Pending'}</td></tr>`).join('');
   const times=`<section class="card"><h2>My shifts</h2>${(d.shifts||[]).filter(s=>s.end).map(shiftCard).join('')||'<p class="muted">Completed shifts appear here.</p>'}</section><section class="card"><h2>My time entries</h2>${rows?'<div class="records"><table><thead><tr><th>Work date</th><th>Job</th><th>Minutes</th><th>Review</th></tr></thead><tbody>'+rows+'</tbody></table></div>':'<p class="muted">No time entries recorded.</p>'}</section>`;
-  app.innerHTML = `<div class="bar"><div><p class="muted">${esc(d.company)}</p><h1>${esc(d.employee)}</h1></div><div class="row"><button id="refresh">Refresh</button><button id="logout">Sign out</button></div></div><nav class="portal-tabs" aria-label="Employee portal">${['Home',...features,'Setup help'].map(t=>`<button data-tab="${esc(t)}"${tab===t?' aria-current="page" class="active"':''}>${esc(t)}</button>`).join('')}</nav>${features.includes('Time')?`<section class="punch"><h2>${open?'On the clock':'Time clock'}</h2><p class="muted">Work time zone · ${esc(d.timezone)}</p>${punch}</section>`:''}${tab==='Setup help'?'<section class="card"><h2>Public setup help</h2><p>This assistant searches only the installed public setup guide. Ask your company support contact for help with employee workflows.</p><form id="setup-help"><label>Setup question<input name="question" maxlength="1500" required></label><p class="error" role="alert"></p><button>Search guide</button></form><div id="setup-answer" aria-live="polite"></div></section>':tab==='Time'?times:tab==='Time off'?leaveContent(session.leave):selfserviceContent(tab,session)+(tab==='Home'&&features.includes('Time')?times:'')}`;
+  app.innerHTML = `<div class="bar"><div><p class="muted">${esc(d.company)}</p><h1>${esc(d.employee)}</h1></div><div class="row"><button id="refresh">Refresh</button><button id="logout">Sign out</button></div></div><nav class="portal-tabs" aria-label="Employee portal">${['Home',...features,'Setup help'].map(t=>`<button data-tab="${esc(t)}"${tab===t?' aria-current="page" class="active"':''}>${esc(t)}</button>`).join('')}</nav>${features.includes('Time')?`<section class="punch"><h2>${open?'On the clock':'Time clock'}</h2><p class="muted">Work time zone · ${esc(d.timezone)}</p>${punch}</section>`:''}${tab==='Setup help'?'<section class="card"><h2>Public setup help</h2><p>This assistant searches only the installed public setup guide. Ask your company support contact for help with employee workflows.</p><form id="setup-help"><label>Setup question<input name="question" maxlength="1500" required></label><p class="error" role="alert"></p><button>Search guide</button></form><div id="setup-answer" aria-live="polite"></div></section>':tab==='Time'?times:tab==='Time off'?leaveContent(session.leave):tab==='Drives'?'<div id="drive-workspace"></div>':tab==='Messages'?messagingContent(chat):tab==='Company knowledge'?employeeKnowledgeContent(knowledge):selfserviceContent(tab,session)+(tab==='Home'&&features.includes('Time')?times:'')}`;
+  if(tab==='Drives')mountDrive(app.querySelector('#drive-workspace'),{companyId:session.driveCompanyId,csrf:session.csrf,worker:true});
   if(tab==='Setup help'&&supportScope==='private-customer-manual'){
     const form=app.querySelector('#setup-help');form.parentElement.querySelector('h2').textContent='Privately supplied customer manual';form.previousElementSibling.textContent='Your host explicitly selected this customer manual. Retrieval reads documentation only and has no company-data access.';form.querySelector('label').firstChild.textContent='Documentation question';
   }
 }
+async function refreshKnowledge(id=''){
+  if(!session?.features?.includes('Company knowledge'))return;
+  try{const params=id?'id='+encodeURIComponent(id):'q='+encodeURIComponent(knowledgeQuery);knowledge={...await api('company-knowledge?'+params),query:knowledgeQuery};}
+  catch(err){knowledge={error:err.message};}
+  if(session&&tab==='Company knowledge')render();
+}
 async function refresh() {
   if(new URLSearchParams(location.hash.slice(1)).has('setup')){login();return;}
-  try { session=await api('session'); render(); }
+  try { session=await api('session'); knowledge=null;if(tab==='Messages'){await refreshChat(chat?.conversation?.id);return;}render();if(tab==='Company knowledge')await refreshKnowledge(); }
   catch(err) { if(!session) login(); else say(err.message); }
+}
+async function refreshChat(id,before){
+  const current=session?.user.id;
+  let next;
+  try{next=await loadConversation(api,null,id,before);}catch(err){next={error:err.message};}
+  if(session?.user.id===current&&tab==='Messages'){chat=next;render();}
 }
 app.addEventListener('submit',async ev=>{
   ev.preventDefault(); if(busy)return;
@@ -78,7 +95,12 @@ app.addEventListener('submit',async ev=>{
   busy=true; if(button)button.disabled=true;
   try {
     if(form.id==='setup'){if(values.password!==values.confirm)throw Error('Passwords do not match.');await api('identity/invite/accept',{token:new URLSearchParams(location.hash.slice(1)).get('setup'),password:values.password});history.replaceState(null,'',location.pathname);login();say('Password set. Sign in with your assigned username.');}
-    else if(form.id==='login') { session=await api('login', {username:values.username,password:values.password}); render(); }
+    else if(form.id==='login') { session=await api('login', {username:values.username,password:values.password}); render();if(tab==='Company knowledge')await refreshKnowledge(); }
+    else if(form.id==='company-knowledge-search'){knowledgeQuery=values.query;await refreshKnowledge();}
+    else if(form.dataset.chat&&tab==='Messages'){
+      const result=await api(messagesUrl(),{action:chatForm(form)});
+      await refreshChat(result.id);say('Message sent.');
+    }
     else if(form.id==='setup-help'){const result=await api('support/answer',{question:values.question});document.querySelector('#setup-answer').innerHTML='<p>'+esc(result.answer)+'</p>'+(result.citations||[]).map(c=>'<p>'+esc(c.title)+' · '+esc(c.version)+' · '+esc(c.section||'')+'</p>').join('')+'<p>'+esc(result.escalation?.message||'')+'</p>';}
     else if(form.id==='request-leave'||form.dataset.leaveWithdraw){
       const action=form.dataset.leaveWithdraw?{type:'withdraw',id:form.dataset.leaveWithdraw,version:Number(values.version)}:{type:'submit',...values};
@@ -99,7 +121,12 @@ app.addEventListener('submit',async ev=>{
 });
 app.addEventListener('click', async ev=>{
   if(busy)return;
-  const target=ev.target.closest('[data-tab]');if(target){tab=target.dataset.tab;if(tab==='Setup help'){try{supportScope=(await api('support/info')).scope;}catch(e){say(e.message);}}render();return;}
+  const article=ev.target.closest('[data-knowledge-article]');if(article){busy=true;try{await refreshKnowledge(article.dataset.knowledgeArticle);}finally{busy=false;}return;}
+  const message=ev.target.closest('[data-chat-thread],[data-chat-refresh]');
+  if(message&&tab==='Messages'){busy=true;try{await refreshChat(message.dataset.chatThread||chat?.conversation?.id,message.dataset.chatBefore);}finally{busy=false;}return;}
+  const target=ev.target.closest('[data-tab]');if(target){tab=target.dataset.tab;
+    if(tab==='Messages'){busy=true;try{chat=null;render();await refreshChat();}finally{busy=false;}return;}
+    chat=null;if(tab==='Setup help'){try{supportScope=(await api('support/info')).scope;}catch(e){say(e.message);}}render();if(tab==='Company knowledge'){busy=true;try{await refreshKnowledge();}finally{busy=false;}}return;}
   if(ev.target.id==='refresh'){busy=true;try{await refresh();}finally{busy=false;}return;}
   if(ev.target.id!=='logout')return;
   busy=true;

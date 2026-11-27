@@ -1,7 +1,11 @@
+import {mainKnowledgeContent,mainKnowledgeAction} from './company-knowledge.mjs';
 import {renderPlanning,planningAction} from '/shared/planning-views.mjs';
 import {manualPayrollContent,manualPayrollAction} from '/shared/manual-payroll-ui.mjs';
 import {workspaceContent,workspaceAction,bindWorkspaceSearch} from './department-workspace.mjs';
 import {renderAssets,assetsAction,bindAssetsLookup} from './assets-workspace.mjs';
+import {messagingContent,groupContent,chatForm,loadConversation,messagesUrl} from '/shared/messaging-ui.mjs';
+import {mountDrive} from '/shared/file-drive-ui.mjs';
+import {privateFtpsQuery,privateFtpsMarkup,submitPrivateFtps} from './private-ftps-ui.mjs';
 import {teamContent,teamAction} from './team-workflows.mjs';
 const auditPortal=location.pathname==='/audit';
 import {openAccount} from '/legal/account.mjs';
@@ -83,14 +87,14 @@ function suitePages(){
   if(auditPortal)return ['Inventory audit','Setup help'];
   const workforce=['Employee records',...(['owner','hr','payroll'].includes(role)?['Benefits administration']:[])];
   const pages=role==='owner'?['Approvals','User access','Audit trail','Portable transfers',...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
-  return [...(session.user.workspaces||[]),...pages.filter(p=>role==='owner'||session.user.areas?.includes(p)),...(role==='owner'?['Migration workspace','Agent access','Planning']:[]),'Setup help'];
+  return [...(session.user.workspaces||[]),...pages.filter(p=>role==='owner'||session.user.areas?.includes(p)),...(companyId&&(role==='owner'||session.user.areas?.includes('Drives'))?['Drives']:[]),...(role==='owner'?['Migration workspace','Agent access','Planning']:[]),'Setup help'];
 }
 function setup(c){return panel('Company profile',`<p><b>${esc(c.name)}</b></p><p class="quiet">${acts.filter(([v])=>c.activities.includes(v)).map(([,n])=>esc(n)).join(' · ')||'No activities selected'}</p><div class="rule"></div><p>Featured on overview</p><p>${esc(c.featured.join(' · ')||'None')}</p>`,btn('settings','Edit profile'))+
   panel('Workspaces','<p>Each company keeps its own contacts, stock, document numbers and journals.</p>',session.user.role==='owner'?btn('company','Add company'):'');}
 const views={'Overview':home,'Directory':contacts,'Sales':c=>commerceView(c,true),'Purchasing':c=>commerceView(c,false),'Jobs & time':jobs,'Warehouse':c=>warehouse(c,false),'Assembly':c=>warehouse(c,true),'Fixed assets':assetsView,'Accounting':accounting,'Banking':banks,'Reports':reportView,'Payroll':payrollView,'History':history,'Company setup':setup};
 function restrictedJobs(c){return panel('Jobs',table(['Job'],c.jobs.map(j=>[esc(j.name)])),btn('job','New job'))+panel('Time entries',table(['Date','Employee / job','Minutes','Review'],c.time.toReversed().map(t=>[esc(t.date),esc(title(c.employees,t.employee))+' · '+esc(title(c.jobs,t.job)),t.minutes,t.approved?'Approved':btn('approve time','Approve',t.id)])),btn('time','Log time'))+panel('Employees',table(['Name','Work state','Locality'],c.employees.map(e=>[esc(e.name),esc(e.state),esc(e.locality)])));}
 function payrollBridge(){return (session.user.role==='owner'||session.user.areas?.includes('Employee records')?panel('Publish finalized employee paystubs','<p>Import real finalized PDFs from your payroll process. Employees can securely download or print their own published copies. The worksheet does not generate earnings or finalized stubs.</p>',btn('nav','Publish finalized PDFs','Employee records')):'')+panel('Employee deduction instructions','<p>Review confirmed employee contribution instructions for the selected pay date. Apply them through your payroll process. Closed payroll is never changed.</p>',btn('payroll-deductions','View effective deductions'))+(session.user.role==='owner'||session.user.areas?.includes('Benefits administration')?panel('Pending employer plan changes','<p>Review and export pending requests before recording payroll or provider confirmation.</p>',btn('nav','Open employer plan queue','Benefits administration')):'');}
-const endpoints={'Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Agent access':'agent-admin','Setup help':'support/info','Departments':'departments','Project tracker':'projects','Assets & pallets':'assets','Inventory audit':'assets','Purchase requests':'team/purchasing','Time off review':'team/time-off','Planning':'planning'};
+const endpoints={'Approvals':'approvals','User access':'admin/users','Audit trail':'audit','Employee records':'records','Benefits administration':'benefits','Identity connectors':'identity','Migration workspace':'migration','Agent access':'agent-admin','Setup help':'support/info','Departments':'departments','Project tracker':'projects','Assets & pallets':'assets','Inventory audit':'assets','Purchase requests':'team/purchasing','Time off review':'team/time-off','Planning':'planning','Company knowledge':'company-knowledge','Messages':'collaboration/messages','Collaboration groups':'collaboration/groups'};
 async function loadPage(){
   const generation=++loadGeneration;auxiliary=null;render();
   if(session&&page==='Payroll'&&['owner','payroll'].includes(session.user.role)&&companyId&&session.user.areas.includes('Payroll')){
@@ -98,8 +102,8 @@ async function loadPage(){
     catch(err){if(generation===loadGeneration){auxiliary={error:err.message};render();}}
     return;
   }
-  if(!session||!endpoints[page])return;
-  try{const response=await api(endpoints[page]+(['Employee records','Benefits administration','Identity connectors','Departments','Project tracker','Assets & pallets','Inventory audit','Purchase requests','Time off review','Planning'].includes(page)?'?companyId='+encodeURIComponent(companyId)+(page==='Inventory audit'?'&auditOnly=true':''):''));if(generation!==loadGeneration)return;auxiliary=response;render();}
+  if(!session||!endpoints[page]||(['Messages','Collaboration groups'].includes(page)&&!companyId))return;
+  try{const response=await api(endpoints[page]+(['Employee records','Benefits administration','Identity connectors','Departments','Project tracker','Assets & pallets','Inventory audit','Purchase requests','Time off review','Planning','Company knowledge','Messages','Collaboration groups'].includes(page)?'?companyId='+encodeURIComponent(companyId)+(page==='Inventory audit'?'&auditOnly=true':''):''));if(generation!==loadGeneration)return;auxiliary=response;render();}
   catch(err){if(generation===loadGeneration){auxiliary={error:err.message};render();}}
 }
 function navButton(key){
@@ -110,7 +114,7 @@ function roleFilter(root){
   const role=session?.user.role;
   for(const button of root.querySelectorAll('button[data-act]')){
     const act=button.dataset.act;
-    if(role==='viewer'&&!readOnlyActs.has(act)&&!act.startsWith('assets-'))button.hidden=true;
+    if(role==='viewer'&&!act.startsWith('knowledge-')&&!readOnlyActs.has(act)&&!act.startsWith('assets-'))button.hidden=true;
     if(role!=='owner'&&['company','group','intercompany'].includes(act))button.hidden=true;
     if(!['owner','manager'].includes(role)&&['settings','approve time','close'].includes(act))button.hidden=true;
   }
@@ -128,7 +132,10 @@ function render(){
   }
   if(full.length)nav+=label('Full Suite')+full.map(navButton).join('');
   let body;
-  if(page==='Planning'&&full.includes(page))body=c?(auxiliary?.error?panel('Planning unavailable','<p>'+esc(auxiliary.error)+'</p>'):auxiliary?renderPlanning(c,auxiliary.day,auxiliary):panel('Planning','<p>Loading company planning…</p>')):panel('Planning','<p>Create a company first.</p>');
+  if(page==='Company knowledge'&&full.includes(page))body=mainKnowledgeContent(auxiliary,c);
+  else if(page==='Planning'&&full.includes(page))body=c?(auxiliary?.error?panel('Planning unavailable','<p>'+esc(auxiliary.error)+'</p>'):auxiliary?renderPlanning(c,auxiliary.day,auxiliary):panel('Planning','<p>Loading company planning…</p>')):panel('Planning','<p>Create a company first.</p>');
+  else if(full.includes(page)&&['Messages','Collaboration groups'].includes(page))body=c?(page==='Messages'?messagingContent(auxiliary):groupContent(auxiliary)):panel(page,'<p>Create or select a company first.</p>');
+  else if(page==='Drives'&&full.includes(page))body='<div id="drive-workspace"></div>';
   else if(full.includes(page))body=['Purchase requests','Time off review'].includes(page)?teamContent(page,auxiliary,session):['Departments','Project tracker'].includes(page)?workspaceContent(page,auxiliary,session):['Assets & pallets','Inventory audit'].includes(page)?renderAssets(auxiliary,{auditOnly:page==='Inventory audit'}):suiteContent(page,auxiliary,session,companyId);
   else if(c&&allowed(page))body=page==='Jobs & time'&&!allowed('Payroll')?restrictedJobs(c):page==='Payroll'?(['hr','payroll'].includes(user.role)?panel('Payroll employee records','<p>Publish finalized payroll PDFs from Employee records. Employer contribution changes remain pending until reviewed.</p>',allowed('Employee records')?btn('nav','Open employee records','Employee records'):'')+payrollBridge():views[page](c,s,filter)+(['owner','payroll'].includes(user.role)?payrollBridge():'')):views[page](c,s,filter);
   else if(c)body=panel('ERP access','<p>No ERP areas are enabled for this login. Ask your administrator to assign access.</p>');
@@ -144,6 +151,9 @@ function render(){
   roleFilter(app);
   bindWorkspaceSearch(app,api,companyId);
   bindAssetsLookup(app,auxiliary);
+  if(page==='Drives')mountDrive(app.querySelector('#drive-workspace'),{companyId,csrf:session.csrf,
+    markup:async data=>privateFtpsMarkup(data,await api(privateFtpsQuery(data)).catch(()=>null)),
+    submitExtra:(form,data,{refresh})=>submitPrivateFtps(form,data,{api,toast,refresh})});
 }
 async function save(type,a){
   check(session,'Sign in first.');
@@ -186,6 +196,7 @@ async function action(type,key){
   if(type==='nav'){page=key;menu=false;await loadPage();window.scrollTo(0,0);return;}
   if(type==='menu'){menu=!menu;render();return;}
   const context={session,companyId,auxiliary,api,formModal,closeModal,download,toast,async refresh(response){if(response?.state)useSession(response);else useSession(await api('session'));await loadPage();}};
+  if(page==='Company knowledge'&&type.startsWith('knowledge-')){const generation=loadGeneration;return mainKnowledgeAction(type,key,{data:auxiliary,companyId,api,formModal,closeModal,toast,show(data){if(generation===loadGeneration&&page==='Company knowledge'){auxiliary=data;render();}}});}
   if(await teamAction(type,key,context))return;
   if(await workspaceAction(type,key,context)||await assetsAction(type,key,context)||await suiteAction(type,key,context))return;
   const s=session.state,c=s.companies.find(x=>x.id===companyId),now=localDate();
@@ -302,6 +313,17 @@ function worksheet(c,personId){
   });
 }
 
+app.addEventListener('click',async ev=>{
+  const button=ev.target.closest('[data-chat-thread],[data-chat-refresh]');
+  if(!button||busy||page!=='Messages')return;
+  busy=true;
+  const generation=++loadGeneration;
+  try{
+    const response=await loadConversation(api,companyId,button.dataset.chatThread||auxiliary?.conversation?.id,button.dataset.chatBefore);
+    if(generation===loadGeneration){auxiliary=response;render();}
+  }catch(e){if(generation===loadGeneration){auxiliary={error:e.message};render();}}
+  finally{busy=false;}
+});
 document.addEventListener('click',async ev=>{
   const b=ev.target.closest('button[data-act]');
   if(!b||b.dataset.act==='cancel'||busy)return;
@@ -317,7 +339,14 @@ app.addEventListener('submit',async ev=>{
   ev.preventDefault();if(busy)return;busy=true;
   const form=ev.target,v=Object.fromEntries(new FormData(form)),submit=ev.submitter;if(submit)submit.disabled=true;
   try{
-    if(form.id==='setup'){
+    if(form.dataset.chat||Object.hasOwn(form.dataset,'chatGroup')){
+      const company=companyId,generation=loadGeneration,isGroup=Object.hasOwn(form.dataset,'chatGroup');
+      const path=isGroup?'collaboration/groups?companyId='+encodeURIComponent(company):messagesUrl(company);
+      const result=await api(path,{action:chatForm(form)});
+      if(generation!==loadGeneration)return;
+      const next=isGroup?result:await loadConversation(api,company,result.id);
+      if(generation===loadGeneration){auxiliary=next;render();toast(isGroup?'Group saved.':'Message sent.');}
+    }else if(form.id==='setup'){
       check(v.password===v.confirm,'Passwords do not match.');await api('identity/invite/accept',{token:new URLSearchParams(location.hash.slice(1)).get('setup'),password:v.password});window.history.replaceState(null,'',location.pathname);gate();toast('ERP password set. Sign in with your assigned ERP username.');
     }else if(form.id==='login'){
       const next=await api('login',{username:v.username,password:v.password});useSession(next);

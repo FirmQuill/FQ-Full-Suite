@@ -1,6 +1,6 @@
 # Diagnose setup failures and retry safely
 
-Article: setup-failures · Installed version: 0.5.0-preview.1 · Scope: public initial setup only.
+Article: setup-failures · Installed version: 0.6.0-preview.1 · Scope: public initial setup only.
 
 ## Package validation errors
 
@@ -12,4 +12,4 @@ Destination already exists or workspace initialized: use the existing workspace;
 
 ## Escalation
 
-If retry remains blocked, stop repeated attempts and contact your designated company owner or FirmQuill support contact. Supply installed version 0.5.0-preview.1, relevant setup article ID, exact error, stage reached and redacted reproduction steps. Do not send passwords, bearer tokens, cookies, raw customer exports, employee evidence or paystubs. Production accounting, payroll, provider and feature questions are outside the default setup assistant; consult the separately delivered private manual and authorized support process.
+If retry remains blocked, stop repeated attempts and contact your designated company owner or FirmQuill support contact. Supply installed version 0.6.0-preview.1, relevant setup article ID, exact error, stage reached and redacted reproduction steps. Do not send passwords, bearer tokens, cookies, raw customer exports, employee evidence or paystubs. Production accounting, payroll, provider and feature questions are outside the default setup assistant; consult the separately delivered private manual and authorized support process.

@@ -1,6 +1,6 @@
 # Initialize an empty workspace or reviewed company package
 
-Article: initialize-workspace · Installed version: 0.5.0-preview.1 · Scope: public initial setup only. See SETUP-GUIDE.md for the exact package controls and screenshots.
+Article: initialize-workspace · Installed version: 0.6.0-preview.1 · Scope: public initial setup only. See SETUP-GUIDE.md for the exact package controls and screenshots.
 
 ## Choose one initial path
 
