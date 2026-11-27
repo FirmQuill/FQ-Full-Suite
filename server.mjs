@@ -1,3 +1,4 @@
+import {createPasskeys,initializePasskeys,passkeyOrigin} from './passkeys.mjs';
 import {createModuleActivation} from './module-activation.mjs';
 import {csvReceiptList,previewCsvUndo,executeCsvUndo} from './csv-recovery.mjs';
 import {supportDiagnostics} from './support-diagnostics.mjs';
@@ -39,7 +40,7 @@ import {initializeTeamWorkflows,teamPages,purchasingView,purchasingCommand,myLea
 const token=()=>randomBytes(32).toString('base64url');
 const termsHash=createHash('sha256').update(termsText.replace(/\r\n?/g,'\n')).digest('hex');
 const mime={html:'text/html; charset=utf-8',mjs:'text/javascript; charset=utf-8',css:'text/css; charset=utf-8',svg:'image/svg+xml',png:'image/png'};
-const common=new Set(['report-packet.mjs','report-packet-ui.mjs','app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs','contextual-help-ui.mjs','contextual-help.css']);
+const common=new Set(['passkeys-ui.mjs','passkey-browser.mjs','report-packet.mjs','report-packet-ui.mjs','app.css','mark.svg','headquarters.png','core.mjs','views.mjs','interop.mjs','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','warehouse-desk.mjs','contextual-help-ui.mjs','contextual-help.css']);
 const mainFiles=new Set(['index.html','app.mjs','suite.css','administration.mjs','record-admin.mjs','benefit-admin.mjs','identity-admin.mjs','connected-admin.mjs','department-workspace.mjs','assets-workspace.mjs','team-workflows.mjs','month-end-close.mjs','backup-admin.mjs','company-knowledge.mjs','private-ftps-ui.mjs','csv-recovery-ui.mjs','activation-ui.mjs','audit.html']);
 const workerFiles=new Set(['index.html','app.mjs','worker.css','selfservice.mjs']);
 const deny=(n,msg)=>requireThat(false,n,msg);
@@ -62,6 +63,8 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
   initializeReportPackets(db);
   initializeCollaborationGroups(db);
   initializeMessaging(db);
+  initializePasskeys(db);
+  const passkeys=createPasskeys(db);
   initializeManualPayroll(db);
   const driveService=createDriveService(db), driveRoutes=createDriveRoutes(driveService);
   if(termsVersion===legacyAgreement.version&&termsHash===legacyAgreement.hash){
@@ -84,6 +87,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
     requireThat(session?.portal===portal&&session.until>Date.now()&&session.absolute>Date.now(),401,'Sign in again.');
     const u=safeUser(db.prepare('SELECT * FROM accounts WHERE id=? AND active=1').get(session.userId));
     requireThat(u&&u.authVersion===session.authVersion&&(u.role==='worker')===(portal==='worker'),401,'Sign in again.');
+    if(session.passkeyId)requireThat(passkeys.currentCredential(u,portal,session.passkeyId),401,'Sign in again.');
     if(u.employeeId&&u.assignments.length===1)requireThat(!['inactive','disabled','deactivated','terminated'].includes(employeeProfile(db,readBooks(db).state,u.assignments[0],u.employeeId).employmentStatus),401,'Employee access is disabled.');
     if(u.role!=='worker'&&u.employeeId)requireThat(db.prepare('SELECT enabled FROM employee_erp_flags WHERE company=? AND employee=?').get(u.assignments[0],u.employeeId)?.enabled,401,'ERP access is disabled.');
     session.until=Date.now()+30*60000;return u;
@@ -128,13 +132,14 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
   function portalServer(portal,publicOrigin){
     return createServer(async(req,res)=>{
       const localPort=req.socket.localPort;
-      const origin=publicOrigin||'http://127.0.0.1:'+localPort;
+      const hostLabel=!publicOrigin&&req.headers.host==='localhost:'+localPort?'localhost':'127.0.0.1';
+      const origin=publicOrigin||'http://'+hostLabel+':'+localPort;
       const secure=origin.startsWith('https://');
       const cookieName=(secure?'__Host-':'')+'fq_'+portal;
       const setCookie=(value,age)=>{const existing=res.getHeader('Set-Cookie'),cookies=existing?(Array.isArray(existing)?existing:[existing]):[];res.setHeader('Set-Cookie',[...cookies,cookieName+'='+value+'; HttpOnly; SameSite=Strict; Path=/; Max-Age='+age+(secure?'; Secure':'')]);};
       res.setHeader('Cache-Control','no-store');res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','no-referrer');
       res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
-      res.setHeader('X-Frame-Options','DENY');
+      res.setHeader('X-Frame-Options','DENY');res.setHeader('Permissions-Policy','publickey-credentials-create=(self), publickey-credentials-get=(self)');
       try{
         requireThat(req.headers.host===new URL(origin).host||req.headers.host==='127.0.0.1:'+localPort,403,'Unknown host.');
         const url=new URL(req.url,origin),path=url.pathname;
@@ -144,7 +149,7 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           if(path.startsWith('/legal/')){
             name=path.slice(7);requireThat(['terms.mjs','consent.mjs','terms-ui.mjs','terms.css','account.mjs','privacy.html','privacy.css'].includes(name),404,'File unavailable.');root='web/legal/';
           }else if(path.startsWith('/shared/')){
-            name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['app.css','mark.svg','headquarters.png','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','contextual-help-ui.mjs','contextual-help.css'].includes(name)),404,'File unavailable.');root='shared/';
+            name=path.slice(8);requireThat(common.has(name)&&(portal==='main'||['passkeys-ui.mjs','passkey-browser.mjs','app.css','mark.svg','headquarters.png','file-drive-ui.mjs','knowledge-content.mjs','messaging-ui.mjs','contextual-help-ui.mjs','contextual-help.css'].includes(name)),404,'File unavailable.');root='shared/';
           }else requireThat((portal==='main'?mainFiles:workerFiles).has(name),404,'File unavailable.');
           const bytes=await readFile(new URL('./'+root+name,import.meta.url));res.writeHead(200,{'Content-Type':mime[name.split('.').pop()]});res.end(req.method==='HEAD'?undefined:bytes);return;
         }
@@ -184,6 +189,27 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           const fresh={userId:u.id,authVersion:u.authVersion,portal,csrf:token(),until:Date.now()+30*60000,absolute:Date.now()+12*3600000},key=token();
           userFor(fresh,portal);storeSession(key,fresh);setCookie(key,43200);res.writeHead(302,{Location:'/'});res.end();return;
         }
+        const pkOrigin=path.startsWith('/api/passkeys/')?passkeyOrigin(portal,origin,req.headers.host):null;
+        if(path==='/api/passkeys/available'&&!post){send(res,200,{available:!!pkOrigin});return;}
+        if(post&&['/api/passkeys/sign-in/start','/api/passkeys/sign-in/finish'].includes(path)){
+          requireThat(pkOrigin,403,'Passkeys are unavailable on this origin. Use your password.');
+          const ip=req.socket.remoteAddress;
+          passkeys.limit('login/'+portal+'/'+ip);
+          const pkCookie=(secure?'__Host-':'')+'fq_pk_'+portal;
+          const binding=cookies.find(x=>x.startsWith(pkCookie+'='))?.slice(pkCookie.length+1);
+          const pkSet=(value,age)=>res.setHeader('Set-Cookie',pkCookie+'='+value+'; HttpOnly; SameSite=Strict; Path=/; Max-Age='+age+(secure?'; Secure':''));
+          if(path.endsWith('/start')){
+            await jsonBody(req,256);
+            const {options,ticket}=await passkeys.loginStart(pkOrigin);pkSet(ticket,120);send(res,200,{options});return;
+          }
+          const p=await jsonBody(req,48*1024);pkSet('',0);
+          const candidate=(u,k)=>{const time=Date.now();return {userId:u.id,authVersion:u.authVersion,portal,passkeyId:k,csrf:token(),until:time+30*60000,absolute:time+12*3600000};};
+          const login=await passkeys.loginFinish(pkOrigin,binding,p.response,(row,k)=>userFor(candidate(row,k),portal));
+          requireThat(!res.destroyed,401,'Sign in again.');
+          const fresh=candidate(login.account,login.credential);userFor(fresh,portal);
+          if(s?.portal===portal)sessions.delete(sid);
+          const key=token();storeSession(key,fresh);setCookie(key,43200);send(res,200,snapshot(safeUser(login.account),fresh));return;
+        }
         if(path==='/api/login'&&post){
           const p=await jsonBody(req,4096),username=String(p.username??'').trim().toLowerCase();
           const now=Date.now(),ip=req.socket.remoteAddress;
@@ -218,6 +244,31 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           send(res,200,snapshot(account,s));return;
         }
         requireThat(hasAccepted(u),428,'Read and agree to the Terms of Service first.');
+        if(path.startsWith('/api/passkeys/')){
+          requireThat(pkOrigin,403,'Passkeys are unavailable on this origin.');
+          const live=()=>{requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return db.prepare('SELECT * FROM accounts WHERE id=?').get(active.id);};
+          if(path==='/api/passkeys/list'&&!post){send(res,200,passkeys.list(pkOrigin,live()));return;}
+          requireThat(post&&['/api/passkeys/register/start','/api/passkeys/register/finish','/api/passkeys/revoke'].includes(path),404,'Endpoint unavailable.');
+          const p=await jsonBody(req,48*1024),row=live(),ip=req.socket.remoteAddress;
+          let result;
+          if(path.endsWith('/finish')){
+            passkeys.limit('register-finish/'+row.id,30);
+            result=await passkeys.finish(pkOrigin,row,sid,p.ticket,p.response,live);
+          }else{
+            requireThat(passkeys.list(pkOrigin,row).available,403,'Passkeys require a supported local account.');
+            passkeys.limit('reauth/'+row.id,8);passkeys.limit('management/'+ip);
+            const ended=new AbortController(),abort=()=>ended.abort();res.once('close',abort);
+            let ok;try{if(res.destroyed)abort();ok=await passwordWork.login(ip,()=>passwordMatches(p.password,row.hash),ended.signal);}finally{res.off('close',abort);}
+            if(ended.signal.aborted||res.destroyed)return;
+            const active=live();requireThat(ok&&row.authVersion===active.authVersion,403,'Enter the current password for this account.');
+            if(path.endsWith('/start')){
+              result=await passkeys.begin(pkOrigin,active,sid,p.label);send(res,200,result);return;
+            }
+            result=passkeys.revoke(pkOrigin,active,p.id);
+          }
+          tx(db,()=>audit(db,u,'',path.endsWith('/revoke')?'passkey revoked':'passkey registered',portal+' portal'));
+          send(res,200,result);return;
+        }
         if(path==='/api/module-activation'){
           requireThat(portal==='main',404,'Endpoint unavailable.');
           owner(u);
@@ -427,11 +478,10 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
         if(portal==='main'&&path==='/api/identity'&&!post){requireArea(db,u,'Identity connectors');send(res,200,identity.view(u,workforceState,scope));return;}
         if(portal==='main'&&path==='/api/identity/action'&&post){requireArea(db,u,'Identity connectors');const p=await jsonBody(req,2*1024*1024);const result=await identity.command(u,workforceState,p.action);send(res,200,{result});return;}
         if(portal==='main'&&path==='/api/manual-payroll'){
-          if(!post){send(res,200,{...manualPayrollView(db,u,workforceState,scope.companyId),canProcess:activation.allows('manual-payroll')});return;}
+          if(!post){send(res,200,{...manualPayrollView(db,u,workforceState,scope.companyId),canProcess:true});return;}
           const input=await jsonBody(req,64*1024);
           const result=tx(db,()=>{
             requireThat(sessions.get(sid)===s,401,'Sign in again.');const active=userFor(s,portal);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');
-            requireThat(activation.allows('manual-payroll'),403,'Manual payroll processing is not activated for this Full Suite installation.');
             return {...manualPayrollStoreCommand(db,active,readBooks(db).state,scope.companyId,input),canProcess:true};
           });
           send(res,200,result);return;

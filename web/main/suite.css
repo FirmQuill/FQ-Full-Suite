@@ -26,3 +26,5 @@ pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:55vh;overflow:auto;fo
   body.printing-report-packet .packet-printable tr{break-inside:avoid}
   body.printing-report-packet .packet-printable h3{break-after:avoid}
 }
+
+.worker-logo-preview{object-fit:contain;object-position:left center;max-width:100%;border:1px solid currentColor;border-radius:.35rem;}

@@ -1,3 +1,4 @@
+import {bindPasskeyLogin,bindPasskeyManagement} from '/shared/passkeys-ui.mjs';
 import {activationPanel,activationAction,renderRenewalNotice} from './activation-ui.mjs';
 import {csvRecoveryPanel,csvRecoveryAction} from './csv-recovery-ui.mjs';
 import {mountContextualHelp} from '/shared/contextual-help-ui.mjs';
@@ -60,6 +61,7 @@ function gate(){
   if(setup){app.innerHTML=`<div class="gatepanel"><h1>Set up your separate ERP login</h1><form id="setup">${input('password','Choose password','password','','minlength="12" autocomplete="new-password"')}${input('confirm','Confirm password','password','','minlength="12" autocomplete="new-password"')}<p class="error" role="alert"></p><button class="primary">Activate ERP login</button></form></div>`;return;}
   app.innerHTML=`<div class="gate"><div class="gateart">${brand}<section><p class="eyebrow">Full Suite</p><h2>Company books</h2><div class="bookart" aria-hidden="true"></div></section><p class="foot small">Company-hosted workspace</p></div><div class="gatepanel"><p class="eyebrow">FirmQuill &nbsp; / &nbsp; Full Suite</p><h1>Sign in</h1><p class="quiet">Use your individual company account to open your assigned books.</p><form id="login">${input('username','Username','text','','autocomplete="username" autocapitalize="none" spellcheck="false"')}${input('password','Password','password','','autocomplete="current-password"')}<div class="error" role="alert"></div><button class="primary">Sign in</button></form><p class="small quiet">For clock-in and timesheets, open your company’s worker portal.</p></div></div>`;
   const loginForm=app.querySelector('#login');api('identity/providers').then(p=>{if(loginForm.isConnected)loginForm.insertAdjacentHTML('afterend',(p.providers||[]).map(p=>`<p><a href="/api/identity/oidc/start?id=${encodeURIComponent(p.id)}">ERP sign-in with ${esc(p.name)}</a></p>`).join(''));}).catch(()=>{});
+  void bindPasskeyLogin(loginForm,api,async next=>{useSession(next);closeModal();notice.textContent='';await loadPage();});
 }
 async function api(path,body){
   const requestEpoch=epoch;
@@ -71,7 +73,7 @@ async function api(path,body){
   const data=await response.json().catch(()=>({}));
   if(requestEpoch!==epoch)throw Error('The session changed. Sign in again.');
   if(!response.ok){
-    if(response.status===401&&path!=='login'){signedOut();throw Error('Your session ended. Sign in again.');}
+    if(response.status===401&&path!=='login'&&!path.startsWith('passkeys/sign-in/')){signedOut();throw Error('Your session ended. Sign in again.');}
     if(response.status===409&&session){
       closeModal();
       const latest=await api('session');useSession(latest);await loadPage();
@@ -170,8 +172,9 @@ function render(){
   if(page==='Payroll'&&!auditPortal&&c&&allowed(page)&&!['hr','payroll'].includes(user.role))body=panel('Free federal estimate','<p>The existing federal worksheet is an estimate only. It does not create, process or finalize payroll.</p>')+body;
   if(c?.projectScope==='permitted-records')body='<div class="callout"><p>These views and totals include only records permitted for your account. Ask the owner for a complete company close.</p></div>'+body;
   const picker=c?`<label for="company">Company</label><select id="company" aria-label="Active company" class="picker">${options(mapping(s.companies))}</select>`:'';
-  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><div class="sidebarfoot small">FirmQuill · Full Suite preview</div></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1>${page==='Overview'?'Workspace overview':esc(page)}</h1></div>${c&&page==='Overview'?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
+  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><div class="sidebarfoot small">FirmQuill · Full Suite preview</div></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}${!auditPortal&&['owner','manager'].includes(user.role)?'<div data-passkey-management></div>':''}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1>${page==='Overview'?'Workspace overview':esc(page)}</h1></div>${c&&page==='Overview'?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
   mountContextualHelp(app.querySelector('#contextual-help'),{page,companyId,api});
+  bindPasskeyManagement(app.querySelector('[data-passkey-management]'),api);
   const renewalSlot=app.querySelector('#module-renewal');
   if(renewalSlot){
     const paint=()=>{

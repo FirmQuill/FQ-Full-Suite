@@ -79,14 +79,14 @@ export async function createModuleActivation({directory,verifierPath,clock=Date.
   }
   const status=()=>{
     const state=temporal(current,clock()),active=state==='active';
-    return {edition,installationId:id,configured:!!key,configurationIssue:problem,
+    return {edition,installationId:id,configured:!!key,configurationIssue:problem,paidScopePresent:!!current?.modules.some(m=>m!=='manual-payroll'),
       modules:Object.fromEntries(modules.map(m=>[m,active&&current.modules.includes(m)])),
       status:invalid?'invalid saved activation':state,expiresAt:current?.expiresAt??null,notBefore:current?.notBefore??null};
   };
   // Owner UI projection only: no code, identity, module scope, issuer or file paths.
   const renewalNotice=()=>{
     const now=clock(),state=temporal(current,now);
-    if(invalid||!current||current.expiresAt===undefined||!['active','expired'].includes(state))return null;
+    if(invalid||!current||current.expiresAt===undefined||!['active','expired'].includes(state)||!current.modules.some(m=>m!=='manual-payroll'))return null;
     return {expiresAt:current.expiresAt,remainingMs:Math.max(0,current.expiresAt*1000-now)};
   };
   const allows=mod=>modules.includes(mod)&&!!key&&temporal(current,clock())==='active'&&current.modules.includes(mod);

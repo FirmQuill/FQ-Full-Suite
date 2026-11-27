@@ -146,6 +146,56 @@ async function contactSettings(ctx,companyId){
   });
 }
 
+const maxSourceLogoBytes=20*1024*1024,maxSavedLogoBytes=512*1024;
+const logoTooLarge='Choose a logo at most 20 MiB, no more than 8192 pixels per side and 24 megapixels.';
+function sourceLogoSize(bytes){
+  const view=new DataView(bytes.buffer), n=bytes.length;
+  if(n>=33&&view.getUint32(0)===0x89504e47&&view.getUint32(4)===0x0d0a1a0a&&view.getUint32(8)===13&&view.getUint32(12)===0x49484452)
+    return ['image/png',view.getUint32(16),view.getUint32(20)];
+  if(n>10&&view.getUint16(0)===0xffd8){
+    for(let i=2;i+8<n;){
+      if(bytes[i++]!==255)break;
+      while(bytes[i]===255)i++;
+      if(i+3>n)break;
+      const marker=bytes[i++],length=view.getUint16(i);
+      if(marker===218||marker===217||length<2||i+length>n)break;
+      if([192,193,194,195,197,198,199,201,202,203,205,206,207].includes(marker)&&length>=8)
+        return ['image/jpeg',view.getUint16(i+5),view.getUint16(i+3)];
+      i+=length;
+    }
+  }
+  throw Error('Choose a readable PNG or JPEG logo.');
+}
+async function fitLogo(file){
+  if(file.size>maxSourceLogoBytes)throw Error(logoTooLarge);
+  const bytes=new Uint8Array(await file.arrayBuffer());
+  const [mime,w,h]=sourceLogoSize(bytes);
+  if(!w||!h||w>8192||h>8192||w*h>24_000_000)throw Error(logoTooLarge);
+  let bitmap;
+  try{bitmap=await createImageBitmap(new Blob([bytes],{type:mime}));}
+  catch{throw Error('This logo could not be opened. Try exporting it again as a PNG or JPEG.');}
+  try{
+    if(!bitmap.width||!bitmap.height||bitmap.width>8192||bitmap.height>8192||bitmap.width*bitmap.height>24_000_000)throw Error(logoTooLarge);
+    // One scale for both axes; rounding to whole pixels is the only proportion adjustment.
+    let scale=Math.min(1,2048/Math.max(bitmap.width,bitmap.height));
+    const canvas=document.createElement('canvas');
+    for(let attempt=0;attempt<14;attempt++,scale*=0.78){
+      const width=Math.max(1,Math.round(bitmap.width*scale)),height=Math.max(1,Math.round(bitmap.height*scale));
+      canvas.width=width;canvas.height=height;
+      const context=canvas.getContext('2d',{alpha:mime==='image/png'});
+      context.imageSmoothingQuality='high';
+      context.drawImage(bitmap,0,0,width,height);
+      const blob=await new Promise(resolve=>canvas.toBlob(resolve,mime,0.9));
+      if(!blob||blob.type!==mime)throw Error('This browser could not prepare the logo. Try exporting a smaller PNG or JPEG.');
+      if(blob.size>maxSavedLogoBytes)continue;
+      const output=new Uint8Array(await blob.arrayBuffer());let raw='';
+      for(let i=0;i<output.length;i+=8192)raw+=String.fromCharCode(...output.subarray(i,i+8192));
+      return {mime,data:btoa(raw),width,height,resized:width!==bitmap.width||height!==bitmap.height};
+    }
+    throw Error('This logo could not be fitted. Try exporting it at a smaller resolution.');
+  }finally{bitmap.close();}
+}
+
 async function workerBranding(ctx,companyId){
   const data=await ctx.api('worker-brand?companyId='+encodeURIComponent(companyId));
   const fields='<p>Change the name and logo workers see after signing in. Signed-out screens and publisher terms keep their existing identity.</p>'+
@@ -153,20 +203,46 @@ async function workerBranding(ctx,companyId){
     field('label','This company’s display name (optional)',data.label,'text','maxlength="160" placeholder="'+esc(data.companyName)+'"')+
     choice('parent','Parent company (only used in Parent company mode)',[['','Choose a parent'],...data.parents.map(p=>[p.id,p.name])],data.parent)+
     '<p>For parent branding, set the parent’s own display name and logo on its company record. Workers see only the resolved brand.</p>'+
-    '<label>Upload a PNG or JPEG logo (up to 512 KiB; 2048 × 2048 max)<input name="file" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></label>'+
-    (data.hasLogo?'<label class="checkfield"><input type="checkbox" name="remove">Remove the saved custom logo</label>':'');
-  ctx.formModal('Worker portal branding',fields,'Save branding',async v=>{
+    '<label>Upload a PNG or JPEG logo<input name="file" type="file" accept="image/png,image/jpeg,.png,.jpg,.jpeg"></label>'+
+    '<p class="small quiet">Large logos are fitted automatically without cropping or stretching. Original limit: 20 MiB, 8192 pixels per side and 24 megapixels. Nothing changes until you save.</p>'+
+    '<p data-logo-status role="status" class="small"></p><img data-logo-preview class="worker-logo-preview" alt="Preview of the new worker portal logo" width="160" height="96" hidden>'+
+    (data.hasLogo?'<p class="small quiet">A custom logo is already saved.</p><label class="checkfield"><input type="checkbox" name="remove">Remove the saved custom logo</label>':'');
+  let prepared,prepare;
+  ctx.formModal('Worker portal branding',fields,'Save branding',async (v,_,form)=>{
     let logoAction=v.remove==='on'?'remove':'keep',logo;
-    if(v.file?.size){
+    if(v.file?.name){
       if(v.remove==='on')throw Error('Choose either a new logo or removal.');
-      if(v.file.size>512*1024)throw Error('Choose a logo no larger than 512 KiB.');
-      const bytes=new Uint8Array(await v.file.arrayBuffer());let raw='';
-      for(let i=0;i<bytes.length;i+=8192)raw+=String.fromCharCode(...bytes.subarray(i,i+8192));
-      const mime=v.file.type||(/\.png$/i.test(v.file.name)?'image/png':'image/jpeg');
-      logoAction='replace';logo={mime,data:btoa(raw)};
+      const task=prepare(form.elements.file.files[0]||v.file);
+      const result=await task.promise;
+      if(!form.isConnected||!form.closest('dialog')?.open||prepared!==task)return;
+      if(!result.ok)throw Error(result.message);
+      logoAction='replace';logo={mime:result.logo.mime,data:result.logo.data};
     }
     await ctx.api('worker-brand',{companyId,version:data.version,mode:v.mode,label:v.label,parent:v.parent,logoAction,logo});
-    ctx.closeModal();await ctx.refresh();ctx.toast('Worker portal branding saved.');
+    if(form.isConnected&&form.closest('dialog')?.open)ctx.closeModal();
+    await ctx.refresh();ctx.toast('Worker portal branding saved.');
+  });
+  const input=document.querySelector('dialog[open] input[name="file"]'), form=input.form;
+  const status=form.querySelector('[data-logo-status]'),preview=form.querySelector('[data-logo-preview]');
+  prepare=file=>{
+    if(prepared?.file===file)return prepared;
+    const task={file};prepared=task;
+    preview.hidden=true;preview.removeAttribute('src');status.textContent='Preparing logo…';
+    task.promise=fitLogo(file).then(logo=>{
+      if(prepared===task&&form.isConnected){
+        preview.src='data:'+logo.mime+';base64,'+logo.data;preview.hidden=false;
+        status.textContent=(logo.resized?'Fitted to ':'Ready at ')+logo.width+' × '+logo.height+' pixels.';
+      }
+      return {ok:true,logo};
+    },error=>{
+      if(prepared===task&&form.isConnected)status.textContent=error.message;
+      return {ok:false,message:error.message};
+    });
+    return task;
+  };
+  input.addEventListener('change',()=>{
+    if(input.files[0])prepare(input.files[0]);
+    else{prepared=null;preview.hidden=true;preview.removeAttribute('src');status.textContent='';}
   });
 }
 

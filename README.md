@@ -28,9 +28,59 @@ In **Payroll**, an owner or an assigned payroll-role user with the Payroll area 
 
 Review amounts before finalizing. Approved time and tax versions are retained, stale drafts must be recalculated, and finalized runs cannot be posted twice. The PDF statement appears only in the intended employee's existing Pay portal when that feature is enabled. The CSV register and balanced journal worksheet are for review. Supply verified external chart account codes for the worksheet; it does not post to FirmQuill's ledger. Overlapping periods and edits to finalized runs are not supported.
 
-The encrypted owner Lite-format transfer carries manual payroll rules, draft and finalized calculations, but not Full Suite employee-portal access or published PDF records. Use the whole encrypted Full Suite database backup to recover those together. Treat both backups as sensitive.
+Employer-entered Manual Payroll does not require a license or activation code.
+Existing licensed payroll flags may still verify in an older signed code; they
+are not a processing requirement. Existing optional private support activation is separate. The federal estimate
+worksheet is not a Manual Payroll
+rule source, and no defaults from the researched tax package are loaded.
+
+Each effective rule version can record a descriptive jurisdiction, separate
+employee versus employer treatment, all/regular/other earnings, whether its
+basis includes or subtracts entered deductions, cent rounding (half up, down,
+or up), and whether to skip partial periods. A jurisdiction label is for
+documentation and exports; only existing work-state and work-locality filters
+determine location scope. Use distinct IDs for independent taxes/payers/
+jurisdictions: a newer version of the same ID supersedes the old one *before*
+location filtering. The same ID carries its recorded prior taxable basis into
+the next effective version. Review historical and opening wages before changing
+a rule's identity or basis.
+
+Enter actual dollars for the actual full or partial period, with any confirmed
+pre-tax deductions separately allocated to regular and other earnings. These
+reduce net once; each enabled rule independently uses its chosen basis. No
+automatic prorating, annualization, employee deduction schedules, benefit-plan
+mapping, rate tables, filings, or transfers are provided. A period is chosen
+explicitly, not inferred from its date length. Effective dates and calendar
+caps use pay date; per-period caps and progressive bands run once on that
+period's selected basis. Brackets round the final sum, not each band. The
+versioned reviewed run and export include the exact rule settings and basis.
+A balanced journal worksheet needs a deduction-payable account when a run
+contains a deduction. This does not post to books.
+
+The encrypted owner Lite-format transfer carries manual payroll rules, draft and finalized calculations, but not Full Suite employee-portal access or published PDF records. Use the whole encrypted Full Suite database backup to recover those together. Treat both backups as sensitive. Upgrade Lite and Full Suite together before moving version-2 calculations; prior builds may reject them. Existing version-1 rules and finalized records need no rewrite.
 
 First-party source is under [MIT](LICENSE); see [component notices](THIRD-PARTY-NOTICES.md). Agreement acceptance remains separate from the source license. Source tests and release builder are included for local verification; see [test results](TEST-RESULTS.md). The public runtime ZIP is built from an explicit allowlist and contains only runtime files, licenses and public setup help.
+
+### Optional passkeys
+
+Supported local accounts can choose **Manage passkeys** after signing in and
+accepting the Terms. Confirm your current FirmQuill password and follow your
+browser or password manager’s prompt. Password sign-in still works. Passkeys
+require the same registered portal hostname: use `http://localhost:<port>` on
+the host itself or separately configured, trusted HTTPS portal hostnames over
+the network. Numeric or cleartext LAN addresses can still use passwords, but
+not passkeys. Changing the hostname requires enrolling again. Encrypted full
+backups retain the public credentials recorded by FirmQuill, not device private
+keys. After restoring an older backup, review enrolled passkeys in case it
+predates a revocation.
+
+### Worker portal branding
+
+In **Worker portal branding**, choose a PNG or JPEG and review the fitted
+preview before saving. Larger images are reduced locally without cropping,
+stretching, or losing PNG transparency. The original can be up to 20 MiB,
+8,192 pixels per side, and 24 megapixels. Saved logos remain limited to
+512 KiB and 2,048 pixels per side. No change is saved if you cancel.
 
 ### Private and group drives
 

@@ -8,6 +8,7 @@ import {createRequire} from 'node:module';
 import {newVault,apply} from '../shared/core.mjs';
 import {openStore,saveBooks,passwordHash,putUser,safeUser} from '../store.mjs';
 import {createSuite} from '../server.mjs';
+import {backupDatabase,restoreDatabase} from '../recovery.mjs';
 
 const password='Fictional portal branding test';
 const png='iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aNTsAAAAASUVORK5CYII=';
@@ -67,6 +68,7 @@ test('owner configures worker company or parent branding; isolation, fallback an
       const {chromium}=createRequire(import.meta.url)(process.env.FIRMQUILL_PLAYWRIGHT||'playwright');
       browser=await chromium.launch({executablePath:executable,headless:true});
       const adminPage=await browser.newPage(), workerPage=await browser.newPage({viewport:{width:390,height:844},isMobile:true,hasTouch:true});
+      adminPage.setDefaultTimeout(10000);workerPage.setDefaultTimeout(10000);
       async function browserLogin(page,url,username){await page.goto(url);const form=page.locator('#login');await form.locator('[name=username]').fill(username);await form.locator('[name=password]').fill(password);await form.getByRole('button',{name:'Sign in',exact:true}).click();await acceptIfRequired(page);}
       await browserLogin(adminPage,suite.mainUrl,'demo-owner');
       await adminPage.locator('nav [data-key="Employee records"]').click();
@@ -77,7 +79,70 @@ test('owner configures worker company or parent branding; isolation, fallback an
       await dialog.locator('[name=mode]').selectOption('parent');await dialog.locator('[name=parent]').selectOption(parent);
       await dialog.getByRole('button',{name:'Save branding',exact:true}).click();
       await dialog.waitFor({state:'hidden'});
+      const fixture=await adminPage.evaluate(()=>{
+        const canvas=document.createElement('canvas');canvas.width=2304;canvas.height=1152;
+        const ctx=canvas.getContext('2d'), pixels=ctx.createImageData(canvas.width,canvas.height);let x=313373;
+        for(let i=0;i<pixels.data.length;i+=4){x^=x<<13;x^=x>>>17;x^=x<<5;
+          pixels.data[i]=x&255;pixels.data[i+1]=(x>>>8)&255;pixels.data[i+2]=(x>>>16)&255;
+          pixels.data[i+3]=i/4%canvas.width<90?0:255;
+        }
+        ctx.putImageData(pixels,0,0);
+        return canvas.toDataURL('image/png').split(',')[1];
+      });
+      const fixtureBytes=Buffer.from(fixture,'base64');assert(fixtureBytes.length>512*1024);
+      const file={name:'synthetic-transparent.png',mimeType:'image/png',buffer:fixtureBytes};
+      const open=()=>adminPage.getByRole('button',{name:'Worker portal branding'}).click();
+      const upload=dialog.locator('input[name=file]'), preview=dialog.locator('[data-logo-preview]');
+      await open();
+      const invalid=Buffer.from('<svg>not a logo</svg>');
+      await upload.setInputFiles({name:'misnamed.png',mimeType:'image/png',buffer:invalid});
+      await dialog.getByRole('status').getByText('Choose a readable PNG or JPEG logo.').waitFor();
+      assert(await preview.isHidden());
+      await upload.setInputFiles(file);
+      await dialog.getByRole('status').getByText(/Fitted to/).waitFor();
+      const size=await preview.evaluate(async img=>{
+        await img.decode();
+        const canvas=document.createElement('canvas');canvas.width=img.naturalWidth;canvas.height=img.naturalHeight;
+        const context=canvas.getContext('2d');context.drawImage(img,0,0);
+        return {width:img.naturalWidth,height:img.naturalHeight,alpha:context.getImageData(0,0,1,1).data[3],bytes:atob(img.src.split(',')[1]).length};
+      });
+      assert(size.bytes<=512*1024);assert(size.width<=2048);assert(Math.abs(size.width-2*size.height)<=1);assert.equal(size.alpha,0);
+      await dialog.getByRole('button',{name:'Cancel',exact:true}).click();
+      assert.equal((await main('worker-brand?companyId='+child.id)).data.hasLogo,false);
+      await open();await dialog.locator('[name=mode]').selectOption('company');await upload.setInputFiles(file);
+      await dialog.getByRole('status').getByText(/Fitted to/).waitFor();
+      await dialog.getByRole('button',{name:'Save branding',exact:true}).click();
+      await dialog.waitFor({state:'hidden'});
       await browserLogin(workerPage,suite.workerUrl,'demo-worker-1');
+      await workerPage.locator('.brand').getByText('Local Child',{exact:true}).waitFor();
+      await workerPage.waitForFunction(w=>document.querySelector('.brand img').naturalWidth===w,size.width);
+      await workerPage.reload();
+      await workerPage.waitForFunction(w=>document.querySelector('.brand img').naturalWidth===w,size.width);
+      const stored=await (await workerPage.request.get(suite.workerUrl+'/api/worker-brand/logo')).body();
+      assert.equal(stored.length,size.bytes);
+      const largeArchive=join(dir,'large.fqdb'), largeRestored=join(dir,'large-restored.sqlite');
+      await backupDatabase(database,largeArchive,password);await restoreDatabase(largeArchive,largeRestored,password);
+      const restoredLarge=openStore(largeRestored);
+      try{assert.deepEqual(Buffer.from(restoredLarge.prepare('SELECT logo FROM worker_branding WHERE company=?').get(child.id).logo),stored);}
+      finally{restoredLarge.close();}
+      console.info('Synthetic PNG source '+fixtureBytes.length+' bytes; stored '+size.bytes+' bytes, '+size.width+' × '+size.height+' pixels; transparency verified.');
+      const small=await adminPage.evaluate(()=>{
+        const c=document.createElement('canvas');c.width=24;c.height=12;
+        const ctx=c.getContext('2d');ctx.fillStyle='#358d8d';ctx.fillRect(2,3,16,7);
+        return ['image/png','image/jpeg'].map(mime=>c.toDataURL(mime).split(',')[1]);
+      });
+      await open();
+      const excessive=Buffer.from(fixtureBytes.subarray(0,33));excessive.writeUInt32BE(9000,16);
+      await upload.setInputFiles({name:'too-wide.png',mimeType:'image/png',buffer:excessive});
+      await dialog.getByRole('status').getByText(/Choose a logo at most 20 MiB/).waitFor();
+      await upload.setInputFiles({name:'small.png',mimeType:'image/png',buffer:Buffer.from(small[0],'base64')});
+      await dialog.getByRole('status').getByText('Ready at 24 × 12 pixels.').waitFor();
+      await upload.setInputFiles({name:'small.jpg',mimeType:'image/jpeg',buffer:Buffer.from(small[1],'base64')});
+      await dialog.getByRole('status').getByText('Ready at 24 × 12 pixels.').waitFor();
+      assert((await preview.getAttribute('src')).startsWith('data:image/jpeg;'));
+      await dialog.locator('[name=mode]').selectOption('parent');await dialog.locator('[name=parent]').selectOption(parent);
+      await dialog.getByRole('button',{name:'Save branding',exact:true}).click();await dialog.waitFor({state:'hidden'});
+      await workerPage.reload();
       await workerPage.locator('.brand').getByText('The Harborline Group',{exact:true}).waitFor();
       await workerPage.waitForFunction(()=>document.querySelector('.brand img').naturalWidth>0);
       assert.equal(await workerPage.title(),'The Harborline Group · Employee portal');
@@ -88,5 +153,11 @@ test('owner configures worker company or parent branding; isolation, fallback an
     await browser?.close();browser=null;await suite.close();suite=null;
     db=openStore(database);
     assert.equal(db.prepare('SELECT parent FROM worker_branding WHERE company=?').get(child.id).parent,parent);
+    const prior=db.prepare('SELECT mime,logo FROM worker_branding WHERE company=?').get(child.id);
+    db.close();db=null;
+    const archive=join(dir,'sample.fqdb'), restored=join(dir,'restored.sqlite');
+    await backupDatabase(database,archive,password);await restoreDatabase(archive,restored,password);
+    db=openStore(restored);
+    assert.deepEqual(db.prepare('SELECT mime,logo FROM worker_branding WHERE company=?').get(child.id),prior);
   }finally{await browser?.close();await suite?.close();db?.close();await rm(dir,{recursive:true,force:true});}
 });
