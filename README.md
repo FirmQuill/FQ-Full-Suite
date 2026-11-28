@@ -200,15 +200,29 @@ present, invalid packages do not select an older unsigned owner manual.
 To remove or replace the package, stop the host, update these settings and
 restart; this does not modify books or activation state.
 
-### Public 0.6.5 AI removal and license compatibility
+### Install a licensed add-on on Windows
 
-Stop the older host and use a freshly extracted application folder. Do not
-overlay 0.6.5 onto an older program directory. Retain your separate database and
-recovery archives. Existing AI integration records are not deleted, but no
-AI integration routes, UI, or command-line adapter are included in 0.6.5.
-A signed license alone cannot restore removed code. For a prior mixed
-license containing an AI module, ask the issuer for a public-compatible
-reissue for the supported entitlement; ordinary workflows do not need one.
+Stop the older host, extract the full ZIP into a fresh application folder and
+retain your separate database and recovery archives. Run **Start FirmQuill Full.cmd**.
+On its first standard Windows launch, the host provisions the release's public
+verification keys in `FirmQuill-licensing` beside the database. Keep this
+private directory with the workspace so its installation ID survives upgrades.
+For a shared or unwritable workspace folder, the host uses a private
+`FirmQuill-licensing-<workspace hash>` directory under the Windows host account's
+local application data. Use the same host account and database path on restart.
+Hosts already configured with an external verifier or installation directory
+continue to use that configuration.
+
+1. Sign in as the owner, accept the Terms and open **Packages → Signed add-ons**.
+   Copy the installation ID and give it to the issuer for a matching signed
+   add-on and license. The license must cover the package ID, revision and permissions.
+2. Place the signed `.fqaddon` in the extracted application's `packages\`
+   folder. In **Packages**, choose **Upload signed license** and select
+   the matching `.fqlicense`.
+3. In **Packages**, choose **Review add-on folder**, read the permissions,
+   check the approval box and choose **Apply add-on**. The installed card
+   shows the controls provided by the licensed add-on. Use **Version Upgrade** or
+   **Packages** to upload a future renewal.
 
 ### Optional manual package folder
 

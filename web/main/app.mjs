@@ -174,7 +174,7 @@ function render(){
   if(activeGroup)body=groupDashboard(activeGroup);
   else if(page==='Time clock kiosk'&&full.includes(page))body=c?kioskPanel(auxiliary):panel(page,'<p>Create or select a company first.</p>');
   else if(page==='Version Upgrade'&&full.includes(page))body=activationPanel(auxiliary);
-  else if(page==='Packages'&&full.includes(page))body=packagesPanel(auxiliary)+addonPanel(auxiliary?.addons);
+  else if(page==='Packages'&&full.includes(page))body=activationPanel(auxiliary)+addonPanel(auxiliary?.addons)+packagesPanel(auxiliary);
   else if(page==='Report builder'&&full.includes(page))body='<div id="report-packet-workspace"></div>';
   else if(page==='Company knowledge'&&full.includes(page))body=mainKnowledgeContent(auxiliary,c);
   else if(page==='Planning'&&full.includes(page))body=c?(auxiliary?.error?panel('Planning unavailable','<p>'+esc(auxiliary.error)+'</p>'):auxiliary?renderPlanning(c,auxiliary.day,auxiliary):panel('Planning','<p>Loading company planning…</p>')):panel('Planning','<p>Create a company first.</p>');
@@ -198,7 +198,10 @@ function render(){
   app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><a class="sidebarfoot small fq-legal-link" href="/legal/legal.html" target="_blank" rel="noopener">Legal</a></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}${!auditPortal&&['owner','manager'].includes(user.role)?'<div data-passkey-management></div>':''}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1${activeGroup?' data-department-heading tabindex="-1"':''}>${activeGroup?esc(activeGroup.title)+' overview':page==='Overview'?'Workspace overview':esc(page)}</h1></div>${!activeGroup&&c&&page==='Overview'&&allowed('Sales')?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&page!=='Version Upgrade'&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
   if(session.contextualHelpCandidate&&!activeGroup&&(!auditPortal||auditAccess()))mountContextualHelp(app.querySelector('#contextual-help'),{page,companyId,api});
   bindPasskeyManagement(app.querySelector('[data-passkey-management]'),api);
-  if(!activeGroup&&page==='Version Upgrade')mountLicenseUpload(app,{api,refresh:async result=>{const data=await api('session');if(page==='Version Upgrade'){useSession(data);auxiliary=result;render();}}});
+  if(!activeGroup&&['Version Upgrade','Packages'].includes(page)){
+    const uploadPage=page;
+    mountLicenseUpload(app,{api,refresh:async result=>{const data=await api('session');if(page===uploadPage){useSession(data);auxiliary=result;render();}}});
+  }
   if(!activeGroup&&page==='Packages')mountAddonActions(app,{api,refresh:loadPage,toast});
   const renewalSlot=app.querySelector('#module-renewal');
   if(renewalSlot){

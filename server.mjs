@@ -6,6 +6,7 @@ import {initializeTimeKiosk,createTimeKiosk} from './time-kiosk.mjs';
 import {createPasskeys,initializePasskeys,passkeyOrigin} from './passkeys.mjs';
 import {createModuleActivation} from './module-activation.mjs';
 import {createAddonInstaller} from './addon-installer.mjs';
+import {isOwnerRoute,isExternalRoute,forwardAddonRequest} from './addon-endpoints.mjs';
 import {createAddonWorkspaceBridge} from './addon-workspace-broker.mjs';
 import {loadSignedSupportPackage} from './signed-support-package.mjs';
 import {loadManualPackageFolder} from './manual-package-folder.mjs';
@@ -64,7 +65,8 @@ async function jsonBody(req,max){
   return data;
 }
 function send(res,status,value){res.writeHead(status,{'Content-Type':res.getHeader('Content-Type')||'application/json; charset=utf-8'});res.end(JSON.stringify(value));}
-async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,identityOptions={},supportOptions={},activationOptions={},addonOptions={},workspaceBridgeFactory=createAddonWorkspaceBridge,ftpsOptions={},ftpsTransport,driveFactory,backupOptions={},backupClock,backupIntervalMs=60_000,backupArchive,planningClock=localPlanningDay,planningIntervalMs=60_000}){
+async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,workerOrigin,addonOrigin=mainOrigin,identityOptions={},supportOptions={},activationOptions={},addonOptions={},workspaceBridgeFactory=createAddonWorkspaceBridge,ftpsOptions={},ftpsTransport,driveFactory,backupOptions={},backupClock,backupIntervalMs=60_000,backupArchive,planningClock=localPlanningDay,planningIntervalMs=60_000}){
+  if(addonOrigin)requireThat(new URL(addonOrigin).origin===addonOrigin&&new URL(addonOrigin).protocol==='https:'&&addonOrigin!==workerOrigin,400,'Configure an exact HTTPS origin for client endpoints, distinct from the worker portal.');
   const activation=await createModuleActivation(activationOptions);
   const db=openStore(database),sessions=new Map(),attempts=new Map();
   initializeTeamWorkflows(db);
@@ -199,6 +201,18 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
       res.setHeader('Content-Security-Policy',"default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'");
       res.setHeader('X-Frame-Options','DENY');res.setHeader('Permissions-Policy','publickey-credentials-create=(self), publickey-credentials-get=(self)');
       try{
+        const clientOrigin=addonOrigin||origin;
+        const clientHost=portal==='main'&&req.headers.host===new URL(clientOrigin).host;
+        const requestPath=req.url.split('?',1)[0];
+        if(portal==='main'&&isExternalRoute(requestPath)){
+          // A stock loopback installation may also host a domain selected by the
+          // approving owner. Only the service's exact external paths use it.
+          const dispatch=clientHost?addons.route(requestPath):!addonOrigin&&addons.route(requestPath,req.headers.host||'');
+          requireThat(dispatch,404,'Endpoint unavailable.');
+          await forwardAddonRequest(req,res,dispatch);return;
+        }
+        // A dedicated client hostname can only reach exact licensed external routes.
+        if(clientHost&&addonOrigin&&addonOrigin!==publicOrigin)deny(404,'Endpoint unavailable.');
         requireThat(req.headers.host===new URL(origin).host||req.headers.host==='127.0.0.1:'+localPort,403,'Unknown host.');
         const url=new URL(req.url,origin),path=url.pathname;
         if(!path.startsWith('/api/')){
@@ -365,6 +379,21 @@ async function createSuite({database,mainPort=4179,workerPort=4180,mainOrigin,wo
           requireThat(portal==='main',404,'Endpoint unavailable.');owner(u);
           const current=()=>{requireThat(sessions.get(sid)===s&&!res.destroyed,401,'Sign in again.');const active=userFor(s,portal);owner(active);requireThat(hasAccepted(active),428,'Read and agree to the Terms of Service first.');return active;};
           current();
+          if(path==='/api/addons/controls'){
+            requireThat(post,405,'Method unavailable.');
+            const input=await jsonBody(req,16384);
+            const result=await addons.controls(input,clientOrigin,current);
+            const actor=current();
+            if(input.action!=='view')tx(db,()=>audit(db,actor,'','add-on owner control',JSON.stringify({id:input.id,action:input.action})));
+            send(res,200,result);return;
+          }
+          if(isOwnerRoute(path)){
+            const dispatch=addons.route(path);requireThat(dispatch,404,'Endpoint unavailable.');
+            const values=post?await jsonBody(req,16384):{};
+            const result=await dispatch({channel:'owner-route',method:req.method,url:req.url,values,origin:clientOrigin},current);
+            const actor=current();if(post)tx(db,()=>audit(db,actor,'','add-on owner control',path));
+            send(res,200,result);return;
+          }
           if(!post&&path==='/api/addons'){const value=await addons.status();current();send(res,200,value);return;}
           if(!post&&path==='/api/addons/review'){const value=await addons.review();current();send(res,200,value);return;}
           const actions={'/api/addons/apply':['apply',['id','receipt','confirm']],'/api/addons/restart':['restart',['id','confirm']],'/api/addons/settings':['settings',['id','settings','confirm']],'/api/addons/invoke':['invoke',['id','value']],'/api/addons/write-policy':['writePolicy',['id','autoApproveWrites','confirm']],'/api/addons/approve-write':['approveWrite',['id','proposalId','digest','confirm']]};

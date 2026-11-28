@@ -64,6 +64,24 @@ test('add-on license schema rejects missing freshness fields, malformed grants a
   assert.equal(x.app.addonAllows(grants[0].id,Number.MAX_SAFE_INTEGER,['service.runtime','network.https','workspace.read','workspace.write','workspace.write.auto']),true);
 });
 
+test('an exact client route belongs to one licensed service revision and cannot claim a host route',async t=>{
+  const x=await setup(t);
+  const permissions=['settings','service.runtime','service.controls','route:/fictional/status','route:/api/addons/fictional-panel'];
+  const assigned=grant({permissions});
+  for(const reserved of ['/api/session','/api/addons/controls','/api/addons/apply','/shared/app.mjs','/audit','/fictional/*']){
+    await assert.rejects(()=>x.app.activate(x.fx.mint(dated({addons:[grant({permissions:['route:'+reserved]})]})),()=>{}),{status:400});
+  }
+  const other=grant({id:'fictional-other',permissions:['route:/fictional/status']});
+  await assert.rejects(()=>x.app.activate(x.fx.mint(dated({addons:[assigned,other]})),()=>{}),{status:400});
+  await x.app.activate(x.fx.mint(dated({addons:[assigned]})),()=>{});
+  assert.equal(x.app.addonAllows(assigned.id,2,permissions),true);
+  assert.equal(x.app.addonAllows(other.id,2,permissions),false);
+  assert.equal(x.app.addonAllows(assigned.id,1,permissions),false);
+  assert.equal(x.app.addonAllows(assigned.id,2,['route:/fictional/other']),false);
+  x.advance(3600000);
+  assert.equal(x.app.addonAllows(assigned.id,2,permissions),false);
+});
+
 test('all activation entry points reject stale, undated and conflicting add-on replacement even after old grant expires',async t=>{
   const x=await setup(t),original=x.fx.mint(dated());await x.app.activate(original,()=>{});
   const filename=join(x.fx.options.directory,'active-entitlement.fqlicense');

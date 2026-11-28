@@ -1,12 +1,12 @@
 import {readFile,writeFile,mkdir,copyFile,readdir,lstat} from 'node:fs/promises';
 import {resolve,relative,join,dirname,isAbsolute} from 'node:path';
 import {fileURLToPath,pathToFileURL} from 'node:url';
-import {createHash} from 'node:crypto';
+import {createHash,createPublicKey} from 'node:crypto';
 
 const source=fileURLToPath(new URL('../',import.meta.url));
 const articles=['install-launch.md','first-admin.md','initialize-workspace.md','setup-verification.md','setup-failures.md'];
 const shots=['01-private-first-launch','02-first-administrator','03-setup-error-and-retry','04-empty-setup-complete','05-books-sign-in','06-review-terms','07-empty-books','08-create-first-company','09-setup-verified','10-approved-package-preview','11-package-setup-complete','12-public-setup-help'].map(n=>n+'.png');
-const modules=['addon-installer','addon-network-broker','addon-workspace-broker','addon-windows-supervisor','addon-service-host','addon-service-runner','manual-package-folder','signed-support-package','time-kiosk','passkeys','module-activation','upgrade-envelope','csv-recovery','password-work','report-packet-store','scheduled-backups','support-diagnostics','contextual-help','month-end-close','file-drives','collaboration-groups','messaging','company-knowledge','manual-payroll-store','payroll-template-package','warehouse-planning','team-workflows','departments','project-workspace','project-record-scope','assets-workspace','desk-migration','asset-desk-migration','portable-desk','access','benefits','branding','demo','host','ftps','identity','migration','records','recovery','server','setup-package','setup-wizard','store','support','transfer','worker'].map(n=>n+'.mjs');
+const modules=['addon-endpoints','addon-installer','addon-network-broker','addon-workspace-broker','addon-windows-supervisor','addon-service-host','addon-service-runner','manual-package-folder','signed-support-package','time-kiosk','passkeys','module-activation','upgrade-envelope','csv-recovery','password-work','report-packet-store','scheduled-backups','support-diagnostics','contextual-help','month-end-close','file-drives','collaboration-groups','messaging','company-knowledge','manual-payroll-store','payroll-template-package','warehouse-planning','team-workflows','departments','project-workspace','project-record-scope','assets-workspace','desk-migration','asset-desk-migration','portable-desk','access','benefits','branding','demo','host','ftps','identity','migration','records','recovery','server','setup-package','setup-wizard','store','support','transfer','worker'].map(n=>n+'.mjs');
 const assets=[...['.nojekyll','app.css','app.mjs','core.mjs','report-packet.mjs','report-packet-ui.mjs','desk-core.mjs','warehouse-desk.mjs','file-drive-ui.mjs','contextual-help-ui.mjs','contextual-help.css','knowledge-content.mjs','messaging-ui.mjs','planning-core.mjs','planning-views.mjs','headquarters.png','passkeys-ui.mjs','passkey-browser.mjs','index.html','interop.mjs','mark.svg','payroll-rules.mjs','manual-payroll.mjs','manual-payroll-ui.mjs','sample.mjs','sw.js','vault.mjs','views.mjs'].map(n=>'shared/'+n),...['account.mjs','consent.mjs','legal.html','legal.mjs','privacy.css','privacy.html','terms-ui.mjs','terms.css','terms.mjs'].map(n=>'web/legal/'+n),...['company-knowledge.mjs','team-workflows.mjs','month-end-close.mjs','backup-admin.mjs','department-workspace.mjs','assets-workspace.mjs','audit.html','administration.mjs','app.mjs','navigation-groups.mjs','private-ftps-ui.mjs','csv-recovery-ui.mjs','activation-ui.mjs','addon-ui.mjs','time-kiosk-ui.mjs','benefit-admin.mjs','connected-admin.mjs','identity-admin.mjs','index.html','record-admin.mjs','suite.css'].map(n=>'web/main/'+n),...['app.mjs','index.html','selfservice.mjs','worker.css','kiosk.html','kiosk.mjs','kiosk.css'].map(n=>'web/worker/'+n),...['index.html','setup.css','setup.mjs'].map(n=>'web/setup/'+n)];
 const escape=value=>String(value).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 export async function renderSetupGuide(root=source){
@@ -33,14 +33,30 @@ export async function validatePublicDocumentation(root=source){
   for(const p of permitted)if(!actual.includes(p))throw Error('Missing public setup asset: '+p);
   return {version:index.version,articles:articles.length,screenshots:shots.length,scope:index.scope};
 }
-export async function buildPublicRelease(destination,{root=source}={}){
+async function releasePins(publisherFile,entitlementFile){
+  async function readPin(file){
+    const pem=await readFile(file,'utf8');
+    if(!/^-----BEGIN PUBLIC KEY-----\r?\n[A-Za-z0-9+/=\r\n]+-----END PUBLIC KEY-----\s*$/.test(pem))throw Error('Release signing inputs must be public SPKI PEM files.');
+    const key=createPublicKey(pem);
+    if(key.asymmetricKeyType!=='ed25519')throw Error('Use Ed25519 release verifier keys.');
+    return key.export({format:'pem',type:'spki'});
+  }
+  const [publisher,entitlement]=await Promise.all([readPin(publisherFile),readPin(entitlementFile)]);
+  if(publisher===entitlement)throw Error('Use separate publisher and entitlement verifiers.');
+  return 'export const publisherPublicKey = '+JSON.stringify(publisher)+';\nexport const entitlementPublicKey = '+JSON.stringify(entitlement)+';\n';
+}
+export async function buildPublicRelease(destination,{root=source,publisherFile,entitlementFile}={}){
   destination=resolve(destination);const rel=relative(root,destination);if(!rel||(!rel.startsWith('..')&&!isAbsolute(rel)))throw Error('Build outside the source checkout.');
   try{await lstat(destination);throw Error('Choose a fresh build destination.');}catch(e){if(e.code!=='ENOENT')throw e;}
   const documentation=await validatePublicDocumentation(root);
   const actualAssets=[...await list(join(root,'shared')).then(a=>a.map(p=>'shared/'+p)),...await list(join(root,'web')).then(a=>a.map(p=>'web/'+p))];if(actualAssets.length!==assets.length||actualAssets.some(p=>!assets.includes(p)))throw Error('Unapproved runtime asset; review the explicit public allowlist.');
+  if(!!publisherFile!==!!entitlementFile)throw Error('Supply both public release verifiers.');
+  const pins=publisherFile?await releasePins(publisherFile,entitlementFile):null;
   await mkdir(destination,{recursive:true});
-  const files=[...modules,'addon-windows-supervisor.cs','vendor/simplewebauthn-server.mjs','vendor/PASSKEY-LICENSES.txt','LICENSE','THIRD-PARTY-NOTICES.md','README.md','COMMERCE-LINES.md','MIGRATION-FORMATS.md','WAREHOUSE-WORKFLOWS.md','TEAM-WORKFLOWS.md','COLLABORATION.md','FTPS-SETUP.md','MONTH-END-CLOSE.md','MANAGED-BACKUPS.md','SETUP-GUIDE.md','Start FirmQuill Full.cmd','fixtures/workforce-demo.mjs',...assets,...await list(join(root,'kb')).then(a=>a.map(p=>'kb/'+p))];
+  await mkdir(join(destination,'packages'));
+  const files=[...modules,'release-verifiers.mjs','addon-provision.mjs','addon-windows-supervisor.cs','vendor/simplewebauthn-server.mjs','vendor/PASSKEY-LICENSES.txt','LICENSE','THIRD-PARTY-NOTICES.md','README.md','COMMERCE-LINES.md','MIGRATION-FORMATS.md','WAREHOUSE-WORKFLOWS.md','TEAM-WORKFLOWS.md','COLLABORATION.md','FTPS-SETUP.md','MONTH-END-CLOSE.md','MANAGED-BACKUPS.md','SETUP-GUIDE.md','Start FirmQuill Full.cmd','fixtures/workforce-demo.mjs',...assets,...await list(join(root,'kb')).then(a=>a.map(p=>'kb/'+p))];
   for(const name of files){const src=join(root,name);if(!(await lstat(src)).isFile())throw Error('Expected regular source file: '+name);await mkdir(dirname(join(destination,name)),{recursive:true});await copyFile(src,join(destination,name));}
+  if(pins)await writeFile(join(destination,'release-verifiers.mjs'),pins);
   await writeFile(join(destination,'SETUP-GUIDE.html'),await renderSetupGuide(root));
   const names=await list(destination),hashes=[];for(const name of names.sort())hashes.push(createHash('sha256').update(await readFile(join(destination,name))).digest('hex')+'  '+name);
   await writeFile(join(destination,'SHA256SUMS.txt'),hashes.join('\n')+'\n');
@@ -48,5 +64,9 @@ export async function buildPublicRelease(destination,{root=source}={}){
 }
 if(process.argv[1]&&import.meta.url===pathToFileURL(resolve(process.argv[1])).href){
   if(process.argv[2]==='--guide')await writeFile(join(source,'SETUP-GUIDE.html'),await renderSetupGuide());
-  else {if(!process.argv[2])throw Error('Pass a fresh destination directory.');console.log(JSON.stringify(await buildPublicRelease(process.argv[2]),null,2));}
+  else {
+    const [destination,publisherFile,entitlementFile,...extra]=process.argv.slice(2);
+    if(!destination||extra.length)throw Error('Pass a fresh destination directory, optionally followed by the publisher and entitlement public PEM paths.');
+    console.log(JSON.stringify(await buildPublicRelease(destination,{publisherFile,entitlementFile}),null,2));
+  }
 }

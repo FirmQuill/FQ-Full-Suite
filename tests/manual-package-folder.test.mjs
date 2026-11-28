@@ -27,7 +27,7 @@ async function fixture(t,{existing=false}={}){
  }finally{db.close();}
  const key=generateKeyPairSync('ed25519'),verifierPath=join(root,'publisher-public.pem');
  await writeFile(verifierPath,key.publicKey.export({type:'spki',format:'pem'}),{mode:0o600});
- const directory=join(runtime,'packages');await mkdir(directory,{mode:0o700});
+ const directory=join(runtime,'packages');await mkdir(directory,{mode:0o700,recursive:true});
  const input=join(directory,'documentation.fqpackage');
  let time=Date.now();const license=await activationFixture(root,{clock:()=>time});
  const state=join(license.options.directory,'manual-package-admission.v1.json');

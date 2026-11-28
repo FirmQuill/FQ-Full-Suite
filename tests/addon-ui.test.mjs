@@ -225,3 +225,54 @@ test('review includes escaped signed HTTPS destinations and withholds Apply when
   const installed=addonPanel({configured:true,installed:[{...candidate,status:'active',permissions:['network.https'],network}]});
   assert.match(installed,/Approved HTTPS destinations/);assert.match(installed,/https:\/\/api\.fictional\.example/);
 });
+
+test('only available controls can open and every action refreshes the panel with escaped content',async()=>{
+  const markup=controls=>addonPanel({configured:true,installed:[{id:candidate.id,name:candidate.name,controls}]});
+  assert.doesNotMatch(markup(false),/data-addon-action="controls"/);
+  assert.match(markup(true),/Open Fictional service controls/);
+  const x=fixture(),slot={innerHTML:'',querySelector:()=>null};
+  const card={dataset:{addonId:candidate.id},querySelector:()=>slot};
+  const open=x.button('controls',card);
+  const panel={title:'Review <code>',description:'A & B',messages:['<one-time code>'],actions:[{
+    id:'save',label:'Save & refresh',fields:[
+      {key:'interval',label:'Interval',type:'integer',value:7},
+      {key:'enabled',label:'Enable',type:'checkbox',value:true},
+      {key:'name',label:'Name',type:'text',value:'"Quoted"'},
+      {key:'scope',label:'Scope',type:'select',value:'a',options:[{value:'a',label:'Read <report>'}]}
+    ]
+  }]};
+  x.opts.api=async(path,body)=>{x.calls.push({path,body});return body.action==='view'?panel:{title:'Updated',actions:[]};};
+  x.mount();await x.click(open);
+  assert.deepEqual(x.calls,[{path:'addons/controls',body:{id:candidate.id,action:'view',values:{}}}]);
+  assert.match(slot.innerHTML,/Review &lt;code&gt;/);
+  assert.match(slot.innerHTML,/&lt;one-time code&gt;/);
+  assert.match(slot.innerHTML,/value="&quot;Quoted&quot;"/);
+  assert.match(slot.innerHTML,/selected>Read &lt;report&gt;/);
+  const form={dataset:{addonControlForm:'save'},closest(selector){return selector==='[data-addon-control-form]'?form:selector==='[data-addon-installed]'?card:null;},
+    querySelectorAll(){return [
+      {dataset:{addonField:'interval'},type:'number',value:'8',valueAsNumber:8},
+      {dataset:{addonField:'enabled'},type:'checkbox',checked:false},
+      {dataset:{addonField:'name'},type:'text',value:'Trial'},
+      {dataset:{addonField:'scope'},type:'select-one',value:'a'}
+    ];}};
+  await Promise.all([x.submit(form),x.submit(form)]);
+  assert.equal(x.calls.length,2);
+  const request=x.calls[1];assert.equal(request.path,'addons/controls');
+  assert.equal(request.body.id,candidate.id);assert.equal(request.body.action,'save');
+  assert.deepEqual({...request.body.values},{interval:8,enabled:false,name:'Trial',scope:'a'});
+  assert.match(slot.innerHTML,/Updated/);assert.doesNotMatch(slot.innerHTML,/one-time/);
+  assert.equal(x.refreshes.length,0);
+});
+
+test('denied or unsupported controls discard the old panel and allow an explicit retry',async()=>{
+  const x=fixture(),slot={textContent:'previous contents',querySelector:()=>null};
+  const card={dataset:{addonId:candidate.id},querySelector:()=>slot},open=x.button('controls',card);
+  let tries=0;
+  x.opts.api=async()=>{
+    if(++tries===1)throw Error('License required.');
+    return {title:'Controls',actions:[{id:'save',label:'Save',fields:[{key:'value',label:'Input',type:'markup'}]}]};
+  };
+  x.mount();await x.click(open);
+  assert.equal(slot.textContent,'');assert.match(x.message.textContent,/License required/);assert.equal(open.disabled,false);
+  await x.click(open);assert.equal(tries,2);assert.match(x.message.textContent,/Unsupported add-on control type/);
+});

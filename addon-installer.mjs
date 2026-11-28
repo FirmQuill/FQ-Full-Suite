@@ -6,10 +6,13 @@ import {fileURLToPath} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {startAddonService} from './addon-service-host.mjs';
+import {validAddonPermissions,serviceOrigin} from './addon-endpoints.mjs';
 import {addonHttps} from './addon-network-broker.mjs';
 
 const exec=promisify(execFile), app=dirname(fileURLToPath(import.meta.url));
 const MAX=2*1024*1024, idPattern=/^[a-z][a-z0-9-]{2,63}$/, hex=/^[a-f0-9]{64}$/;
+const guardHandle=/^[A-Za-z0-9_-]{43}$/;
+const proposalHash=(id,p)=>digest(JSON.stringify([id,p.runtime,p.id,p.path,p.body,...(p.authorization?[p.authorization]:[])]));
 const digest=b=>createHash('sha256').update(b).digest('hex');
 const fail=(message,status=409)=>{throw Object.assign(Error(message),{status});};
 const need=(value,message)=>{if(!value)fail(message);};
@@ -34,7 +37,7 @@ export function inspectAddon(bytes,key,{installationId,runtime='0.6.5'}={}){
   need(exact(p.compatibility,['min','max','hostApi'])&&p.compatibility.hostApi===1,'Unsupported service interface.');
   const minimum=version(p.compatibility.min),maximum=version(p.compatibility.max),current=version(runtime);
   need(compare(minimum,maximum)<=0&&compare(minimum,current)<=0&&compare(current,maximum)<=0,'Add-on is incompatible with this ERP version.');
-  need(['settings','service'].includes(p.type)&&Array.isArray(p.permissions)&&p.permissions.length>=1&&new Set(p.permissions).size===p.permissions.length&&p.permissions.includes('settings')&&p.permissions.every(x=>['settings','service.runtime','network.https','workspace.read','workspace.write','workspace.write.auto'].includes(x))&&(p.type==='service')===p.permissions.includes('service.runtime'),'Unsupported package permissions.');
+  need(['settings','service'].includes(p.type)&&Array.isArray(p.permissions)&&p.permissions.length>=1&&new Set(p.permissions).size===p.permissions.length&&p.permissions.includes('settings')&&validAddonPermissions(p.permissions)&&(p.type==='service')===p.permissions.includes('service.runtime'),'Unsupported package permissions.');
   need(p.type==='service'||p.permissions.length===1,'Data-only add-ons can request settings only.');
   need(!p.permissions.includes('workspace.write.auto')||p.permissions.includes('workspace.write'),'Automatic writes require the write permission.');
   need(Array.isArray(p.network)&&p.network.length<=8&&new Set(p.network).size===p.network.length&&p.network.every(origin=>typeof origin==='string'&&/^https:\/\/[a-z0-9](?:[a-z0-9.-]{0,250}[a-z0-9])?$/.test(origin)&&origin===new URL(origin).origin&&!/\.(?:localhost|local|internal|lan|home|test|invalid|example)$/.test(new URL(origin).hostname)&&/\.[a-z]{2,63}$/.test(new URL(origin).hostname))&&p.permissions.includes('network.https')===(p.network.length>0),'Unsupported HTTPS destinations.');
@@ -96,13 +99,15 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
         if(op==='workspace.write'){
           need(m.permissions.includes('workspace.write'),'Workspace write permission was not approved.');
           const row=state.installed[m.id];need(committed&&row?.active===p.digest,'Workspace writes require a fully active installed runtime.');
-          const proposal=await propose(m.id,input);
+          const guarded=m.permissions.some(v=>v.startsWith('route:'));
+          need(!guarded||guardHandle.test(input?.authorization??''),'A live service authorization is required for this proposal.');
+          const proposal=await propose(m.id,input,guarded);
           if(row.writeMode==='automatic'){need(m.permissions.includes('workspace.write.auto'),'Automatic writes are not licensed.');return approveWrite({id:m.id,proposalId:proposal.id,digest:proposal.digest,confirm:true},()=>state.installed[m.id].approval,true);}
           return {proposalId:proposal.id,status:'pending-owner-approval'};
         }
         throw Error('Unsupported broker operation.');
       }});
-    const original=service;service={...original,health:()=>original.health(),invoke:value=>original.invoke(value),close:()=>original.close(),commit(){committed=true;}};return service;
+    const original=service;service={...original,manifest:p.manifest,digest:p.digest,approval,health:()=>original.health(),invoke:value=>original.invoke(value),close:()=>original.close(),commit(){committed=true;}};return service;
   }
   async function exclusive(fn){need(!closed&&!problem,'Add-on installer unavailable: '+(problem||'closed'));need(!busy,'Another add-on operation is in progress.');busy=true;const work=(async()=>{try{return await fn();}finally{busy=false;}})();inFlight=work.catch(()=>{});return work;}
   async function recover(id,reason){
@@ -144,18 +149,67 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
         const p=await cached(row.active);need(p.manifest.id===id&&p.manifest.revision<=row.highRevision,'Installed add-on history mismatch.');validateAddonSettings(p.manifest.settings,row.settings);
         const high=await cached(row.highDigest);need(high.manifest.id===id&&high.manifest.type===p.manifest.type&&high.manifest.revision===row.highRevision,'Invalid revision high-water history.');
         for(const item of [row.pending,row.previous])if(item){need(exact(item,['digest','settings'])&&hex.test(item.digest),'Invalid pending or rollback history.');const q=await cached(item.digest);need(q.manifest.id===id&&q.manifest.type===p.manifest.type&&q.manifest.revision<=row.highRevision,'Invalid pending or rollback target.');validateAddonSettings(q.manifest.settings,item.settings);}
-        for(const proposal of row.proposals){need(exact(proposal,['id','runtime','path','body','digest','status','reason'])&&hex.test(proposal.id)&&hex.test(proposal.runtime)&&hex.test(proposal.digest)&&['pending','executing','complete','failed'].includes(proposal.status)&&digest(JSON.stringify([id,proposal.runtime,proposal.id,proposal.path,proposal.body]))===proposal.digest,'Invalid workspace write history.');}
+        for(const proposal of row.proposals){need(exact(proposal,['id','runtime','path','body','digest','status','reason',...(Object.hasOwn(proposal,'authorization')?['authorization']:[])])&&(!Object.hasOwn(proposal,'authorization')||typeof proposal.authorization==='string'&&guardHandle.test(proposal.authorization))&&hex.test(proposal.id)&&hex.test(proposal.runtime)&&hex.test(proposal.digest)&&['pending','executing','complete','failed'].includes(proposal.status)&&proposalHash(id,proposal)===proposal.digest,'Invalid workspace write history.');}
       }
       timer=setInterval(()=>refresh().catch(()=>{}),monitorMs);timer.unref();
     }
   }catch(e){problem=e.code==='EEXIST'?'Another installer is running, or its crash lock needs operator review.':e.message||'Installer trust or state could not be verified.';for(const s of services.values())await s.close();services.clear();if(lock){await lock.close();lock=null;await unlink(join(stateRoot,'runtime.lock')).catch(()=>{});}}
+  function activeSurface(id,permission) {
+    const service=services.get(id), row=state.installed[id];
+    if(closed||problem||!service||row?.active!==service.digest||
+      !service.manifest.permissions.includes(permission)||!permitted(service.manifest)||
+      row.approval.id!==service.approval.id||row.approval.authVersion!==service.approval.authVersion) return null;
+    try { authorizeRuntime(row.approval); } catch { return null; }
+    return service;
+  }
+  function surface(id,permission) {
+    const service=activeSurface(id,permission);
+    if(!service) return null;
+    return async (message,currentOwner)=>{
+      function check() {
+        if(activeSurface(id,permission)!==service) fail('Endpoint unavailable.',404);
+        if(currentOwner) {
+          const owner=currentOwner();
+          if(owner.id!==service.approval.id||owner.authVersion!==service.approval.authVersion)
+            fail('The approving owner is required.',403);
+          return {id:owner.id,role:'owner'};
+        }
+      }
+      const owner=check();
+      const value=owner?{...message,owner}:message;
+      return (await invoke({id,value},check,service)).value;
+    };
+  }
+  function route(path,hostname) {
+    for(const [id,service] of services) {
+      if(hostname!==undefined&&service.endpointOrigin!=='https://'+hostname)continue;
+      const dispatch=surface(id,'route:'+path);
+      if(dispatch) return dispatch;
+    }
+    return null;
+  }
+  async function controls(input,origin,currentOwner) {
+    const {id,action,values}=input;
+    if(!exact(input,['id','action','values'])||typeof id!=='string'||typeof action!=='string'||
+      !/^[A-Za-z0-9_-]{1,100}$/.test(action)||!values||typeof values!=='object'||Array.isArray(values))
+      fail('Invalid owner control request.',400);
+    const dispatch=surface(id,'service.controls');
+    if(!dispatch) fail('Endpoint unavailable.',404);
+    const result=await dispatch({channel:'owner',action,values,origin},currentOwner);
+    if(result&&Object.hasOwn(result,'endpointOrigin')) {
+      const service=activeSurface(id,'service.controls');
+      if(!service) fail('Endpoint unavailable.',404);
+      service.endpointOrigin=serviceOrigin(result.endpointOrigin);
+    }
+    return result;
+  }
   function isolationView(id){
     const service=services.get(id),evidence=service?.protection;
     return evidence?.appContainer===true?{appContainer:true,capabilities:evidence.capabilities,noNetworkCapabilities:evidence.noNetworkCapabilities,activeProcessLimit:evidence.activeProcessLimit,killOnClose:evidence.killOnClose,protectedPathsDenied:evidence.protectedPathsDenied,pid:service.pid}:null;
   }
   async function status(){
     await refresh();const installed=[];
-    if(!problem)for(const [id,row] of Object.entries(state.installed)){try{const p=(await cached(row.active)).manifest;const eligible=permitted(p),stopped=p.type==='service'&&!services.has(id);installed.push({id,name:p.name,revision:p.revision,type:p.type,status:!eligible?'license-required':stopped?'unavailable':row.status,reason:!eligible?'Matching active license required.':row.reason||(stopped?'Service stopped. Review and Apply its accepted package to request an owner-approved start.':''),runtimeIsolation:isolationView(id),permissions:p.permissions,network:p.network,writeMode:row.writeMode,writeProposals:eligible?row.proposals:[],settingsSchema:eligible?p.settings:[],settings:eligible?row.settings:{},pendingRestart:eligible&&!!row.pending});}catch{installed.push({id,status:'unavailable',reason:'Accepted package could not be verified.',settingsSchema:[],settings:{}});}}
+    if(!problem)for(const [id,row] of Object.entries(state.installed)){try{const p=(await cached(row.active)).manifest;const eligible=permitted(p),stopped=p.type==='service'&&!services.has(id);installed.push({id,name:p.name,revision:p.revision,type:p.type,status:!eligible?'license-required':stopped?'unavailable':row.status,reason:!eligible?'Matching active license required.':row.reason||(stopped?'Service stopped. Review and Apply its accepted package to request an owner-approved start.':''),runtimeIsolation:isolationView(id),...(activeSurface(id,'service.controls')?{controls:true}:{}),permissions:p.permissions,network:p.network,writeMode:row.writeMode,writeProposals:eligible?row.proposals.map(({authorization,...proposal})=>proposal):[],settingsSchema:eligible?p.settings:[],settings:eligible?row.settings:{},pendingRestart:eligible&&!!row.pending});}catch{installed.push({id,status:'unavailable',reason:'Accepted package could not be verified.',settingsSchema:[],settings:{}});}}
     return {configured:!problem,installationId,reason:problem,installed};
   }
   async function review(){
@@ -203,24 +257,52 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
     if(p.manifest.type==='service'){need(!target.pending,'Review the pending service update first.');target.pending={digest:row.active,settings:valuesChecked};target.reason='Settings saved for review; owner restart approval required.';}else target.settings=valuesChecked;
     authorize();need(permitted(p.manifest),'License changed.');await save(next);return status();
   });}
-  async function invoke({id,value},authorize){
-    need(!closed&&!problem,'Installer unavailable.');authorize();const row=state.installed[id];need(row,'Add-on not installed.');const p=await cached(row.active);need(permitted(p.manifest)&&p.manifest.type==='service','Matching service license required.');need(Buffer.byteLength(JSON.stringify(value)??'null')<=1024*1024,'Service request too large.');const svc=services.get(id);need(svc,'Service unavailable.');let result;
+  async function invoke({id,value},authorize,boundService){
+    if(!boundService&&value&&typeof value==='object'&&['owner','owner-route','http','authorize-write'].includes(value.channel))fail('This request requires a bound service channel.',403);
+    need(!closed&&!problem,'Installer unavailable.');authorize();const row=state.installed[id];need(row,'Add-on not installed.');const p=await cached(row.active);need(permitted(p.manifest)&&p.manifest.type==='service','Matching service license required.');need(Buffer.byteLength(JSON.stringify(value)??'null')<=1024*1024,'Service request too large.');const svc=services.get(id);need(svc&&(!boundService||svc===boundService),'Service unavailable.');authorize();let result;
     try{result=await svc.invoke(value);}catch(e){if(e.code==='ADDON_REQUEST_REJECTED')throw Object.assign(e,{status:409});if(!closed&&!busy&&services.get(id)===svc)await exclusive(()=>recover(id,'Service request failed its health check.'));fail('Service request failed; review add-on status.');}
     authorize();need(permitted(p.manifest),'License changed.');return {value:result};
   }
-  async function propose(id,input){return exclusive(async()=>{
-    need(exact(input,['path','body'])&&typeof input.path==='string'&&input.path.startsWith('/api/')&&input.path.length<=240&&Buffer.byteLength(JSON.stringify(input))<=128*1024,'Invalid workspace write proposal.');const next=copyState(),row=next.installed[id];need(row,'Runtime is not active.');row.proposals=row.proposals.filter(p=>['pending','executing'].includes(p.status));need(row.proposals.length<8,'Too many pending writes.');const proposal={id:randomBytes(32).toString('hex'),runtime:row.active,path:input.path,body:input.body,status:'pending',reason:''};proposal.digest=digest(JSON.stringify([id,proposal.runtime,proposal.id,proposal.path,proposal.body]));row.proposals.push(proposal);await save(next);return proposal;
+  async function writeAuthorizationActive(id,proposal) {
+    if(!proposal.authorization)return true;
+    const running=services.get(id);
+    return !!running&&running.digest===proposal.runtime&&
+      await running.invoke({channel:'authorize-write',authorization:proposal.authorization})===true&&
+      services.get(id)===running;
+  }
+  async function propose(id,input,guarded){return exclusive(async()=>{
+    need(exact(input,['path','body',...(guarded?['authorization']:[])])&&typeof input.path==='string'&&input.path.startsWith('/api/')&&input.path.length<=240&&Buffer.byteLength(JSON.stringify(input))<=128*1024,'Invalid workspace write proposal.');
+    const next=copyState(),row=next.installed[id];need(row,'Runtime is not active.');
+    row.proposals=row.proposals.filter(p=>['pending','executing'].includes(p.status));
+    if(row.proposals.length===8){
+      const retained=[];
+      for(const p of row.proposals)if(p.status==='executing'||await writeAuthorizationActive(id,p))retained.push(p);
+      row.proposals=retained;
+    }
+    need(row.proposals.length<8,'Too many pending writes.');
+    const proposal={id:randomBytes(32).toString('hex'),runtime:row.active,path:input.path,body:input.body,status:'pending',reason:'',...(guarded?{authorization:input.authorization}:{})};
+    proposal.digest=proposalHash(id,proposal);row.proposals.push(proposal);await save(next);return proposal;
   });}
   async function approveWrite({id,proposalId,digest:confirmed,confirm},authorize,automatic=false){return exclusive(async()=>{
-    need(confirm===true,'Explicit workspace write approval required.');const owner=authorize(),row=state.installed[id];need(row,'Add-on is not installed.');const pkg=(await cached(row.active)).manifest;need(permitted(pkg)&&pkg.permissions.includes('workspace.write'),'Workspace writes are not licensed.');if(automatic)need(row.writeMode==='automatic'&&pkg.permissions.includes('workspace.write.auto'),'Automatic writes were not owner-approved.');const found=row.proposals.find(p=>p.id===proposalId);need(found?.status==='pending'&&found.runtime===row.active&&found.digest===confirmed&&digest(JSON.stringify([id,found.runtime,found.id,found.path,found.body]))===confirmed,'Write proposal is stale or already attempted.');
+    need(confirm===true,'Explicit workspace write approval required.');const owner=authorize(),row=state.installed[id];need(row,'Add-on is not installed.');const pkg=(await cached(row.active)).manifest;need(permitted(pkg)&&pkg.permissions.includes('workspace.write'),'Workspace writes are not licensed.');if(automatic)need(row.writeMode==='automatic'&&pkg.permissions.includes('workspace.write.auto'),'Automatic writes were not owner-approved.');const found=row.proposals.find(p=>p.id===proposalId);need(found?.status==='pending'&&found.runtime===row.active&&found.digest===confirmed&&proposalHash(id,found)===confirmed,'Write proposal is stale or already attempted.');
+    const validate=async()=>{
+      const currentOwner=authorize();
+      need(currentOwner.id===owner.id&&currentOwner.authVersion===owner.authVersion&&permitted(pkg),'Approval or license changed.');
+      need(await writeAuthorizationActive(id,found),'The originating service authorization is no longer active.');
+    };
+    await validate();
     let next=copyState(),proposal=next.installed[id].proposals.find(p=>p.id===proposalId);proposal.status='executing';proposal.reason='Outcome must be reconciled if the host is interrupted.';await save(next);
-    try{const result=await workspaceBridge('workspace.write',{path:found.path,body:found.body},{approval:{id:owner.id,authVersion:owner.authVersion},addonId:id});next=copyState();proposal=next.installed[id].proposals.find(p=>p.id===proposalId);proposal.status='complete';proposal.reason='Workspace API completed; recorded in the audit trail.';await save(next);return automatic?{status:'complete',result}:status();}
+    try{await validate();const result=await workspaceBridge('workspace.write',{path:found.path,body:found.body},{approval:{id:owner.id,authVersion:owner.authVersion},addonId:id});next=copyState();proposal=next.installed[id].proposals.find(p=>p.id===proposalId);proposal.status='complete';proposal.reason='Workspace API completed; recorded in the audit trail.';await save(next);return automatic?{proposalId:found.id,status:'complete',result}:status();}
     catch(e){next=copyState();proposal=next.installed[id].proposals.find(p=>p.id===proposalId);proposal.status='failed';proposal.reason='Workspace API did not complete successfully; review its audit trail before retrying.';await save(next);throw e;}
   });}
   async function writePolicy({id,autoApproveWrites,confirm},authorize){return exclusive(async()=>{
-    need(confirm===true&&typeof autoApproveWrites==='boolean','Explicit owner write policy approval required.');const owner=authorize(),row=state.installed[id];need(row,'Add-on is not installed.');const p=(await cached(row.active)).manifest;need(permitted(p)&&p.permissions.includes('workspace.write')&&(!autoApproveWrites||p.permissions.includes('workspace.write.auto')),'Requested write policy is not licensed.');const next=copyState(),approval={id:owner.id,authVersion:owner.authVersion};if(JSON.stringify(row.approval)!==JSON.stringify(approval))for(const proposal of next.installed[id].proposals)if(proposal.status==='pending'){proposal.status='failed';proposal.reason='Approving owner changed; request new work.';}next.installed[id].writeMode=autoApproveWrites?'automatic':'review';next.installed[id].approval=approval;authorize();await save(next);return status();
+    need(confirm===true&&typeof autoApproveWrites==='boolean','Explicit owner write policy approval required.');const owner=authorize(),row=state.installed[id];need(row,'Add-on is not installed.');const p=(await cached(row.active)).manifest;need(permitted(p)&&p.permissions.includes('workspace.write')&&(!autoApproveWrites||p.permissions.includes('workspace.write.auto')),'Requested write policy is not licensed.');const next=copyState(),approval={id:owner.id,authVersion:owner.authVersion};if(JSON.stringify(row.approval)!==JSON.stringify(approval))for(const proposal of next.installed[id].proposals)if(proposal.status==='pending'){proposal.status='failed';proposal.reason='Approving owner changed; request new work.';}next.installed[id].writeMode=autoApproveWrites?'automatic':'review';next.installed[id].approval=approval;authorize();await save(next);
+    if((approval.id!==row.approval.id||approval.authVersion!==row.approval.authVersion)&&p.permissions.some(v=>v.startsWith('route:')||v==='service.controls')){
+      const service=services.get(id);services.delete(id);await service?.close();
+    }
+    return status();
   });}
   async function restore(){if(problem||closed)return status();return exclusive(async()=>{for(const [id,row] of Object.entries(state.installed)){try{const p=await cached(row.active);if(permitted(p.manifest)&&p.manifest.type==='service'&&!services.has(id)){const service=await start(p,row.settings,row.approval);service.commit();services.set(id,service);}}catch(e){await recover(id,'Service failed to start after host restart.');}}return status();});}
-  return {status,review:async()=>{const {packages,...r}=await review();return r;},apply,restart,settings,invoke,refresh,restore,approveWrite,writePolicy,
+  return {status,route,controls,review:async()=>{const {packages,...r}=await review();return r;},apply,restart,settings,invoke,refresh,restore,approveWrite,writePolicy,
     async close(){closed=true;clearInterval(timer);await inFlight;for(const svc of services.values())await svc.close();services.clear();if(lock){await lock.close();lock=null;await unlink(join(stateRoot,'runtime.lock')).catch(()=>{});}}};
 }

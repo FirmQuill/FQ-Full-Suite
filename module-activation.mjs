@@ -5,6 +5,7 @@ import {isAbsolute,join,relative,resolve} from 'node:path';
 import {fileURLToPath} from 'node:url';
 
 import {unwrapUpgradeLicense,envelopeMax} from './upgrade-envelope.mjs';
+import {validAddonPermissions} from './addon-endpoints.mjs';
 
 const app=fileURLToPath(new URL('./',import.meta.url));
 const marker='firmquill.activation.v1';
@@ -14,15 +15,16 @@ export const modules=Object.freeze(['manual-payroll','private-support','payroll-
 const previewModules=Object.freeze([...modules,'software_updates']);
 const installationId=/^[a-f0-9]{64}$/;
 const codeMax=8192;
-const addonPermissions=Object.freeze(['settings','service.runtime','network.https','workspace.read','workspace.write','workspace.write.auto']);
 const addonId=id=>typeof id==='string'&&/^[a-z][a-z0-9-]{2,63}$/.test(id);
-const permissionsValid=list=>Array.isArray(list)&&list.length<=addonPermissions.length&&new Set(list).size===list.length&&list.every(p=>addonPermissions.includes(p));
+const permissionsValid=validAddonPermissions;
 const positiveRevision=n=>Number.isSafeInteger(n)&&n>0;
 const canonical=value=>JSON.stringify(value,(_,v)=>v&&typeof v==='object'&&!Array.isArray(v)?Object.fromEntries(Object.keys(v).sort().map(k=>[k,v[k]])):v);
 function validAddonGrants(grants){
-  return Array.isArray(grants)&&grants.length>=1&&grants.length<=16&&new Set(grants.map(g=>g?.id)).size===grants.length&&grants.every(g=>
+  if (!(Array.isArray(grants)&&grants.length>=1&&grants.length<=16&&new Set(grants.map(g=>g?.id)).size===grants.length&&grants.every(g=>
     g&&typeof g==='object'&&!Array.isArray(g)&&Object.keys(g).length===4&&['id','minRevision','maxRevision','permissions'].every(k=>Object.hasOwn(g,k))&&
-    addonId(g.id)&&positiveRevision(g.minRevision)&&positiveRevision(g.maxRevision)&&g.minRevision<=g.maxRevision&&permissionsValid(g.permissions));
+    addonId(g.id)&&positiveRevision(g.minRevision)&&positiveRevision(g.maxRevision)&&g.minRevision<=g.maxRevision&&permissionsValid(g.permissions)))) return false;
+  const routes=grants.flatMap(g=>g.permissions.filter(p=>p.startsWith('route:')));
+  return new Set(routes).size===routes.length;
 }
 const block=(status,message)=>{throw Object.assign(Error(message),{status});};
 const within=(root,file)=>{const r=relative(root,file);return r===''||(!isAbsolute(r)&&!/^\.\.(?:[\\/]|$)/.test(r));};

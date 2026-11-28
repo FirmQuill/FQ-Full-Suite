@@ -68,7 +68,7 @@ export async function fixtureAddon(t,{settingsOnly=false}={}){
   let now=Date.parse('2026-11-27T12:00:00Z');const license=await activationFixture(root,{clock:()=>now});
   const publisher=generateKeyPairSync('ed25519'),publisherKey=join(root,'publisher-public.pem');
   await writeFile(publisherKey,publisher.publicKey.export({type:'spki',format:'pem'}),{mode:0o600});
-  const directory=join(runtime,'packages');await mkdir(directory,{mode:0o700});
+  const directory=join(runtime,'packages');await mkdir(directory,{mode:0o700,recursive:true});
   const canary=join(root,'fictional-outside-canary.txt');await writeFile(canary,'Fictional outside data canary.');
   const probeNonce='Fictional direct network probe '+randomBytes(16).toString('hex');
   probeServer=createServer(socket=>{probeConnections++;socket.end(probeNonce);});await new Promise((resolve,reject)=>probeServer.once('error',reject).listen(0,'127.0.0.1',resolve));

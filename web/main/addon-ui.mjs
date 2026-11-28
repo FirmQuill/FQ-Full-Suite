@@ -47,7 +47,57 @@ function installedMarkup(addon){
   return '<article class="card" data-addon-installed data-addon-id="'+esc(addon.id)+'"><h3>'+esc(addon.name||addon.id)+'</h3><p><code>'+esc(addon.id)+'</code> · Revision '+esc(addon.revision)+' · '+esc(addon.type)+'</p><p>'+esc(pending?'Restart required':addon.status||'Installed')+(addon.reason?': '+esc(addon.reason):'')+'</p>'+
     (pending?'<p>Apply has staged this service update. Review the reason above before approving its restart.</p><label><input type="checkbox" data-addon-restart-approve> I approve restarting this add-on service.</label><button type="button" data-addon-action="restart" disabled>Approve restart</button>':'')+
     networkMarkup(addon.network,Array.isArray(addon.permissions)&&addon.permissions.includes('network.https'),'Approved HTTPS destinations')+
+    (addon.controls===true?'<button type="button" data-addon-action="controls">Open '+esc(addon.name||addon.id)+' controls</button><section data-addon-controls></section>':'')+
     writePolicyMarkup(addon)+(addon.writeMode==='automatic'?'':writeProposalsMarkup(addon.writeProposals))+settingsForm(addon)+'</article>';
+}
+
+function controlKey(key){
+  return typeof key==='string'&&/^[A-Za-z0-9._:-]{1,128}$/.test(key)&&!reserved.has(key);
+}
+
+function controlField(field){
+  if(!controlKey(field?.key)||typeof field.label!=='string')throw Error('Unsupported add-on control field.');
+  const attributes=' name="addon-control-'+esc(field.key)+'" data-addon-field="'+esc(field.key)+'"';
+  const label=esc(field.label);
+  if(field.type==='checkbox')return '<label><input type="checkbox"'+attributes+(field.value===true?' checked':'')+'> '+label+'</label>';
+  if(field.type==='select'){
+    if(!Array.isArray(field.options))throw Error('Missing add-on control choices.');
+    const choices=field.options.map(choice=>{
+      if(typeof choice?.value!=='string'||typeof choice.label!=='string')throw Error('Unsupported add-on control choice.');
+      return '<option value="'+esc(choice.value)+'"'+(choice.value===field.value?' selected':'')+'>'+esc(choice.label)+'</option>';
+    }).join('');
+    return '<label>'+label+'<select'+attributes+' required>'+choices+'</select></label>';
+  }
+  if(!['text','integer'].includes(field.type))throw Error('Unsupported add-on control type.');
+  const type=field.type==='integer'?'type="number" step="1"':'type="text"';
+  return '<label>'+label+'<input '+type+attributes+' value="'+esc(field.value)+'"></label>';
+}
+
+function controlPanel(panel){
+  if(typeof panel?.title!=='string'||!Array.isArray(panel.actions))throw Error('The add-on returned unsupported controls.');
+  const forms=panel.actions.map(action=>{
+    if(!controlKey(action?.id)||typeof action.label!=='string'||!Array.isArray(action.fields??[]))throw Error('Unsupported add-on control action.');
+    return '<form data-addon-control-form="'+esc(action.id)+'">'+(action.fields??[]).map(controlField).join('')+
+      '<button type="submit" data-addon-action="control-submit">'+esc(action.label)+'</button></form>';
+  }).join('');
+  const messages=panel.messages??[];
+  if(!Array.isArray(messages)||messages.some(msg=>typeof msg!=='string'))throw Error('Unsupported add-on control message.');
+  return '<h4 tabindex="-1">'+esc(panel.title)+'</h4>'+(panel.description?'<p>'+esc(panel.description)+'</p>':'')+
+    messages.map(msg=>'<p>'+esc(msg)+'</p>').join('')+forms;
+}
+
+function controlValues(form){
+  const values=Object.create(null);
+  for(const input of form.querySelectorAll('[data-addon-field]')){
+    const key=input.dataset.addonField;
+    if(!controlKey(key)||Object.hasOwn(values,key))throw Error('Invalid add-on control field.');
+    if(input.type==='checkbox')values[key]=input.checked;
+    else if(input.type==='number'&&input.value!==''){
+      if(!Number.isSafeInteger(input.valueAsNumber))throw Error('Enter a whole number.');
+      values[key]=input.valueAsNumber;
+    }else values[key]=input.value;
+  }
+  return values;
 }
 
 function networkMarkup(network,expected,title){
@@ -137,6 +187,7 @@ export function mountAddonActions(root,{api,refresh=async()=>{},toast=()=>{}}){
   function sync(){
     for(const button of scope.querySelectorAll('[data-addon-action]')){
       const action=button.dataset.addonAction;
+      if(action==='controls'||action==='control-submit')button.disabled=busy;
       if(action==='review')button.disabled=busy||scope.dataset.addonConfigured!=='true';
       if(action==='apply')button.disabled=busy||!button.closest('[data-addon-candidate]')?.querySelector('[data-addon-apply-approve]')?.checked;
       if(action==='restart')button.disabled=busy||!button.closest('[data-addon-installed]')?.querySelector('[data-addon-restart-approve]')?.checked;
@@ -149,16 +200,33 @@ export function mountAddonActions(root,{api,refresh=async()=>{},toast=()=>{}}){
     report(success);toast(success);
     try{await refresh(result);}catch{report(success+' Refresh Packages to see the current status.');}
   }
+  async function showControls(card,action,values){
+    const slot=card?.querySelector('[data-addon-controls]');
+    if(!slot)return;
+    report('Loading add-on controls…');
+    try{
+      const panel=await api('addons/controls',{id:card.dataset.addonId,action,values});
+      if(!scope.isConnected)return;
+      slot.innerHTML=controlPanel(panel);
+      slot.querySelector('h4')?.focus();
+      report('');
+    }catch(error){
+      if(scope.isConnected)slot.textContent='';
+      report((error?.message||'Add-on controls are unavailable.')+' Open the controls again to refresh.');
+    }
+  }
   scope.addEventListener('change',sync);
   scope.addEventListener('click',async event=>{
     const button=event.target.closest?.('[data-addon-action]');
-    if(!button||!scope.contains(button)||['settings','write-policy'].includes(button.dataset.addonAction))return;
+    if(!button||!scope.contains(button)||['settings','write-policy','control-submit'].includes(button.dataset.addonAction))return;
     event.preventDefault();
     if(busy||button.disabled)return;
     const action=button.dataset.addonAction;
     busy=true;sync();
     try{
-      if(action==='review'){
+      if(action==='controls'){
+        await showControls(button.closest('[data-addon-installed]'),'view',{});
+      }else if(action==='review'){
         review=null;report('Checking signed add-ons…');
         const result=await api('addons/review');
         if(!scope.isConnected)return;
@@ -200,12 +268,17 @@ export function mountAddonActions(root,{api,refresh=async()=>{},toast=()=>{}}){
   scope.addEventListener('submit',async event=>{
     const policy=event.target.closest?.('[data-addon-write-policy]');
     const form=event.target.closest?.('[data-addon-settings-form]');
-    if((!form&&!policy)||!scope.contains(form||policy))return;
+    const controls=event.target.closest?.('[data-addon-control-form]');
+    if(!(controls||form||policy)||!scope.contains(controls||form||policy))return;
     event.preventDefault();
     event.stopPropagation?.();
     if(busy)return;
     busy=true;sync();
     try{
+      if(controls){
+        await showControls(controls.closest('[data-addon-installed]'),controls.dataset.addonControlForm,controlValues(controls));
+        return;
+      }
       if(policy){
         if(!policy.querySelector('[data-addon-policy-approve]')?.checked)throw Error('Review and approve this write policy before saving.');
         const autoApproveWrites=policy.querySelector('[name=autoApproveWrites]')?.checked===true;

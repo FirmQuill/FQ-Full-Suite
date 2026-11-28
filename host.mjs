@@ -1,5 +1,4 @@
-import {activationOptionsFromEnv} from './module-activation.mjs';
-import {addonOptionsFromEnv} from './addon-installer.mjs';
+import {releaseAddonOptions} from './addon-provision.mjs';
 import {manualPackageFolderOptionsFromEnv} from './manual-package-folder.mjs';
 import {backupOptionsFromEnv} from './scheduled-backups.mjs';
 import {ftpsOptionsFromEnv} from './ftps.mjs';
@@ -77,7 +76,8 @@ async function main(){
   const mainPort=Number(process.env.FIRMQUILL_MAIN_PORT||4179),workerPort=Number(process.env.FIRMQUILL_WORKER_PORT||4180);
   requireThat([mainPort,workerPort].every(p=>Number.isInteger(p)&&p>=1&&p<=65535)&&mainPort!==workerPort,400,'Select two distinct TCP ports.');
   const supportOptions={...(process.env.FIRMQUILL_SUPPORT_DOCS?{documentationRoot:process.env.FIRMQUILL_SUPPORT_DOCS}:{}),contextualRoot:process.env.FIRMQUILL_CONTEXTUAL_DOCS,signedSupport:{packagePath:process.env.FIRMQUILL_SIGNED_SUPPORT_PACKAGE,verifierPath:process.env.FIRMQUILL_SUPPORT_PACKAGE_PUBLIC_KEY},packageFolder:manualPackageFolderOptionsFromEnv()};
-  const suite=await createSuite({database,mainPort,workerPort,mainOrigin,workerOrigin,supportOptions,activationOptions:activationOptionsFromEnv(),addonOptions:addonOptionsFromEnv(),ftpsOptions:ftpsOptionsFromEnv(),backupOptions:backupOptionsFromEnv()});
+  const addonConfiguration=await releaseAddonOptions(database);
+  const suite=await createSuite({database,mainPort,workerPort,mainOrigin,workerOrigin,addonOrigin:process.env.FIRMQUILL_ADDON_ORIGIN||mainOrigin,supportOptions,...addonConfiguration,ftpsOptions:ftpsOptionsFromEnv(),backupOptions:backupOptionsFromEnv()});
   console.log('FirmQuill Full Suite   '+(mainOrigin||suite.mainUrl)+'/\nFirmQuill Worker       '+(workerOrigin||suite.workerUrl)+'/');
   let stopping=false;async function stop(){if(stopping)return;stopping=true;await suite.close();}
   process.once('SIGINT',stop);process.once('SIGTERM',stop);
