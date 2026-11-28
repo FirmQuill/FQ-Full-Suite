@@ -49,4 +49,16 @@ test('SIMULATED SUPERVISOR MODEL ONLY: installer proposals, automatic policy, ro
   await stage(3);await apply();await installer.restart({id,confirm:true},authorize);assert.equal((await item()).revision,3);assert.deepEqual(await invoke({value:7}),{value:10});
   for(const name of await readdir(directory))await unlink(join(directory,name));await stop();await launch();assert.equal((await item()).revision,3);assert.deepEqual(await invoke({value:9}),{value:12});
   const before=writes.length;now+=3600000;assert.equal((await item()).status,'license-required');await assert.rejects(()=>invoke({op:'broker',operation:'workspace.write',input:{path:'/api/action',body:{fixture:'must not dispatch'}}}));assert.equal(writes.length,before);assert.ok(instances.every(service=>service.closed));
+  await assert.rejects(()=>installer.remove({id,confirm:false},authorize));
+  let revoked;
+  await installer.remove({id,confirm:true},authorize,value=>{revoked=value;});
+  assert.equal(revoked,id);
+  await stop();await launch();
+  assert.equal(await item(),undefined);
+  assert.deepEqual(installer.adminPages(),[]);
+  now-=3600000;
+  await stage(2);assert.equal((await installer.review()).candidates[0].eligible,false);
+  await stage(3);await apply();
+  assert.equal((await item()).writeMode,'review');
+  assert.equal((await item()).writeProposals.length,0);
 });

@@ -42,13 +42,14 @@ function settingsForm(addon){
     '<label><input type="checkbox" data-addon-settings-approve required> I reviewed and approve these settings.</label><button type="submit" data-addon-action="settings" disabled>Save add-on settings</button></form>';
 }
 
-function installedMarkup(addon){
+function installedMarkup(addon,settingsPage=false){
   const pending=addon.pendingRestart===true;
   return '<article class="card" data-addon-installed data-addon-id="'+esc(addon.id)+'"><h3>'+esc(addon.name||addon.id)+'</h3><p><code>'+esc(addon.id)+'</code> · Revision '+esc(addon.revision)+' · '+esc(addon.type)+'</p><p>'+esc(pending?'Restart required':addon.status||'Installed')+(addon.reason?': '+esc(addon.reason):'')+'</p>'+
     (pending?'<p>Apply has staged this service update. Review the reason above before approving its restart.</p><label><input type="checkbox" data-addon-restart-approve> I approve restarting this add-on service.</label><button type="button" data-addon-action="restart" disabled>Approve restart</button>':'')+
-    networkMarkup(addon.network,Array.isArray(addon.permissions)&&addon.permissions.includes('network.https'),'Approved HTTPS destinations')+
-    (addon.controls===true?'<button type="button" data-addon-action="controls">Open '+esc(addon.name||addon.id)+' controls</button><section data-addon-controls></section>':'')+
-    writePolicyMarkup(addon)+(addon.writeMode==='automatic'?'':writeProposalsMarkup(addon.writeProposals))+settingsForm(addon)+'</article>';
+    (!settingsPage?'<label><input type="checkbox" data-addon-remove-approve> I approve removing this installed add-on.</label><button type="button" data-addon-action="remove" disabled>Remove add-on</button>':'')+
+    (!settingsPage?'':networkMarkup(addon.network,Array.isArray(addon.permissions)&&addon.permissions.includes('network.https'),'Approved HTTPS destinations')+
+    (addon.controls===true?'<section data-addon-controls aria-live="polite"></section><button type="button" data-addon-action="controls">Refresh package controls</button>':'')+
+    writePolicyMarkup(addon)+(addon.writeMode==='automatic'?'':writeProposalsMarkup(addon.writeProposals))+settingsForm(addon))+'</article>';
 }
 
 function controlKey(key){
@@ -120,7 +121,8 @@ function writeProposalsMarkup(proposals){
   return '<section><h4>Workspace write requests</h4><p>Each request needs separate owner approval for the exact operation and contents below.</p>'+proposals.map(proposal=>{
     let body;try{body=JSON.stringify(proposal.body,null,2);}catch{}
     const pending=proposal.status==='pending'&&typeof proposal.id==='string'&&!!proposal.id&&typeof proposal.digest==='string'&&/^[a-f0-9]{64}$/.test(proposal.digest)&&typeof body==='string';
-    return '<article class="card" data-addon-write-proposal data-addon-proposal-id="'+esc(proposal.id)+'" data-addon-digest="'+esc(proposal.digest)+'"><h5>Workspace write '+esc(proposal.id)+'</h5><p>Operation: <code>'+esc(proposal.path)+'</code></p><p>'+esc(proposal.status)+(proposal.reason?': '+esc(proposal.reason):'')+'</p><pre>'+esc(body??'The request contents are unavailable.')+'</pre>'+
+    const authority=proposal.scope?'<p>Client <code>'+esc(proposal.scope.clientId)+'</code> · '+esc(proposal.scope.operation)+' · Company '+esc(proposal.scope.companyId||'workspace setup')+'</p>':'';
+    return '<article class="card" data-addon-write-proposal data-addon-proposal-id="'+esc(proposal.id)+'" data-addon-digest="'+esc(proposal.digest)+'"><h5>Workspace write '+esc(proposal.id)+'</h5><p>Operation: <code>'+esc(proposal.path)+'</code></p>'+authority+'<p>'+esc(proposal.status)+(proposal.reason?': '+esc(proposal.reason):'')+'</p><pre>'+esc(body??'The request contents are unavailable.')+'</pre>'+
       '<p>Content digest: <code>'+esc(proposal.digest)+'</code></p>'+
       (pending?'<label><input type="checkbox" data-addon-write-approve> I reviewed this exact workspace write and approve it.</label><button type="button" data-addon-action="approve-write" disabled>Approve workspace write</button>':'')+'</article>';
   }).join('')+'</section>';
@@ -153,10 +155,45 @@ export function addonPanel(data){
     (!configured?'<p>The host administrator must configure the trusted publisher and protected add-on installation directory.</p>':'<p>Place a signed, installation-bound add-on in the package folder, then review its permissions and explicitly Apply it here.</p>')+
     (data.reason||data.error?'<p>'+esc(data.reason||data.error)+'</p>':'')+
     '<p data-addon-message role="status" aria-live="polite"></p>'+
-    (installed.length?installed.map(installedMarkup).join(''):'<p>No add-ons installed.</p>')+
+    (installed.length?installed.map(addon=>installedMarkup(addon)).join(''):'<p>No add-ons installed.</p>')+
     '<div data-addon-review>'+((Array.isArray(data.candidates)&&data.candidates.length)?reviewMarkup(data,false):'')+'</div></section>';
 }
 
+function listenerForm(addon){
+  const state=addon.listener;
+  if(!state)return '';
+  return '<section class="card"><h3>Endpoint</h3><p role="status">Listener '+(state.running?'running':'stopped')+'</p>'+
+    '<form data-listener-config><fieldset'+(state.running?' disabled':'')+'><legend>Endpoint address</legend>'+
+    '<label>HTTPS origin<input required type="url" name="origin" placeholder="https://connector.example.com" value="'+esc(state.origin)+'"></label>'+
+    '<label>Local bind address<select name="host">'+['127.0.0.1','::1'].map(host=>'<option'+(host===state.host?' selected':'')+'>'+host+'</option>').join('')+'</select></label>'+
+    '<label>Local port<input required type="number" name="port" min="1" max="65535" value="'+esc(state.port)+'"></label>'+
+    '<p>Forward this HTTPS hostname to the local listener using a TLS proxy that preserves the Host header.</p>'+
+    '<button type="submit">Save endpoint address</button></fieldset></form>'+
+    '<button type="button" data-addon-action="'+(state.running?'stop':'start')+'"'+(!state.origin?' disabled':'')+'>'+(state.running?'Stop listener':'Start listener')+'</button></section>';
+}
+function grantForm(data){
+  if(!data)return '';
+  const grant=data.grant||{};
+  function option(value,label,selected){
+    return '<option value="'+esc(value)+'"'+(value===selected?' selected':'')+'>'+esc(label)+'</option>';
+  }
+  return '<section class="card"><h3>Delegated permissions</h3><form data-grant-form>'+
+    '<label>Paired client ID<input required name="clientId" value="'+esc(grant.clientId)+'"></label>'+
+    '<label>Act as account<select name="accountId" required>'+option('','Choose an account',grant.accountId)+
+    data.accounts.map(a=>'<option value="'+esc(a.id)+'" data-role="'+esc(a.role)+'" data-companies="'+esc(JSON.stringify(a.assignments))+'"'+(grant.accountId===a.id?' selected':'')+'>'+esc(a.name+' · '+a.role)+'</option>').join('')+'</select></label>'+
+    '<label>Company scope<select name="companyId">'+(data.companies.length?'':option('','Workspace setup',grant.companyId))+
+    data.companies.map(c=>option(c.id,c.name,grant.companyId)).join('')+'</select></label>'+
+    '<fieldset><legend>Permitted actions</legend>'+data.actions.map(a=>
+      '<label><input type="checkbox" name="action" data-roles="'+esc(a.roles.join(' '))+'" value="'+esc(a.id)+'"'+(grant.actions?.includes(a.id)?' checked':'')+'> '+esc(a.label)+'</label>'
+    ).join('')+'</fieldset><button type="submit">Save permissions</button></form>'+
+    (grant.clientId?'<button type="button" data-addon-action="revoke-grant">Revoke permissions</button>':'')+'</section>';
+}
+export function addonPage(data){
+  if(!data?.installed)return '<section class="panel"><p>'+esc(data?.error||'Loading package settings…')+'</p></section>';
+  const addon=data.installed;
+  return '<section class="panel" data-addons data-admin-addon="'+esc(addon.id)+'"><p data-addon-message role="status"></p>'+
+    listenerForm(addon)+grantForm(data.grants)+installedMarkup(addon,true)+'</section>';
+}
 function settingsValues(form){
   const schema=settingsSchema(JSON.parse(form.dataset.addonSchema)),settings={};
   schema.forEach((field,index)=>{
@@ -188,6 +225,7 @@ export function mountAddonActions(root,{api,refresh=async()=>{},toast=()=>{}}){
     for(const button of scope.querySelectorAll('[data-addon-action]')){
       const action=button.dataset.addonAction;
       if(action==='controls'||action==='control-submit')button.disabled=busy;
+      if(action==='remove')button.disabled=busy||!button.closest('[data-addon-installed]')?.querySelector('[data-addon-remove-approve]')?.checked;
       if(action==='review')button.disabled=busy||scope.dataset.addonConfigured!=='true';
       if(action==='apply')button.disabled=busy||!button.closest('[data-addon-candidate]')?.querySelector('[data-addon-apply-approve]')?.checked;
       if(action==='restart')button.disabled=busy||!button.closest('[data-addon-installed]')?.querySelector('[data-addon-restart-approve]')?.checked;
@@ -208,14 +246,37 @@ export function mountAddonActions(root,{api,refresh=async()=>{},toast=()=>{}}){
       const panel=await api('addons/controls',{id:card.dataset.addonId,action,values});
       if(!scope.isConnected)return;
       slot.innerHTML=controlPanel(panel);
-      slot.querySelector('h4')?.focus();
+      if(action!=='view')slot.querySelector('h4')?.focus();
       report('');
     }catch(error){
       if(scope.isConnected)slot.textContent='';
       report((error?.message||'Add-on controls are unavailable.')+' Open the controls again to refresh.');
     }
   }
-  scope.addEventListener('change',sync);
+  function syncGrant(){
+    const form=scope.querySelector('[data-grant-form]');
+    if(!form)return;
+    const actor=form.elements.accountId.selectedOptions[0];
+    const company=form.elements.companyId;
+    const assignments=JSON.parse(actor?.dataset.companies||'[]');
+    for(const option of company.options){
+      option.disabled=actor?.dataset.role!=='owner'&&!assignments.includes(option.value);
+    }
+    if(company.selectedOptions[0]?.disabled){
+      company.value=[...company.options].find(option=>!option.disabled)?.value||'';
+    }
+    const bootstrap=company.value==='';
+    for(const input of form.querySelectorAll('input[name=action]')){
+      const allowed=input.dataset.roles.split(' ').includes(actor?.dataset.role)&&
+        (bootstrap?['workspace.status','company.create'].includes(input.value):input.value!=='company.create');
+      input.disabled=!allowed;
+      if(!allowed)input.checked=false;
+    }
+  }
+  scope.addEventListener('change',(event={})=>{
+    if(event.target?.matches?.('[name=accountId], [name=companyId]'))syncGrant();
+    sync();
+  });
   scope.addEventListener('click',async event=>{
     const button=event.target.closest?.('[data-addon-action]');
     if(!button||!scope.contains(button)||['settings','write-policy','control-submit'].includes(button.dataset.addonAction))return;
@@ -224,7 +285,18 @@ export function mountAddonActions(root,{api,refresh=async()=>{},toast=()=>{}}){
     const action=button.dataset.addonAction;
     busy=true;sync();
     try{
-      if(action==='controls'){
+      if(action==='start'||action==='stop'){
+        await api('addons/listener',{id:scope.dataset.adminAddon,action});
+        await reload(action==='start'?'Listener started.':'Listener stopped.');
+      }else if(action==='revoke-grant'){
+        await api('addons/delegation',{id:scope.dataset.adminAddon,confirm:true,revoke:true});
+        await reload('Delegated permissions revoked.');
+      }else if(action==='remove'){
+        const card=button.closest('[data-addon-installed]');
+        if(!card?.querySelector('[data-addon-remove-approve]')?.checked)return;
+        await api('addons/remove',{id:card.dataset.addonId,confirm:true});
+        await reload('Add-on removed.');
+      }else if(action==='controls'){
         await showControls(button.closest('[data-addon-installed]'),'view',{});
       }else if(action==='review'){
         review=null;report('Checking signed add-ons…');
@@ -269,12 +341,24 @@ export function mountAddonActions(root,{api,refresh=async()=>{},toast=()=>{}}){
     const policy=event.target.closest?.('[data-addon-write-policy]');
     const form=event.target.closest?.('[data-addon-settings-form]');
     const controls=event.target.closest?.('[data-addon-control-form]');
-    if(!(controls||form||policy)||!scope.contains(controls||form||policy))return;
+    const listener=event.target.closest?.('[data-listener-config]');
+    const grant=event.target.closest?.('[data-grant-form]');
+    if(!(controls||form||policy||listener||grant)||!scope.contains(event.target))return;
     event.preventDefault();
     event.stopPropagation?.();
     if(busy)return;
     busy=true;sync();
     try{
+      if(listener){
+        const form=new FormData(listener);
+        await api('addons/listener',{id:scope.dataset.adminAddon,action:'configure',origin:form.get('origin').trim(),host:form.get('host'),port:Number(form.get('port'))});
+        await reload('Endpoint address saved.');return;
+      }
+      if(grant){
+        const form=new FormData(grant);
+        await api('addons/delegation',{id:scope.dataset.adminAddon,clientId:form.get('clientId'),companyId:form.get('companyId'),accountId:form.get('accountId'),actions:form.getAll('action'),confirm:true});
+        await reload('Delegated permissions saved.');return;
+      }
       if(controls){
         await showControls(controls.closest('[data-addon-installed]'),controls.dataset.addonControlForm,controlValues(controls));
         return;
@@ -296,4 +380,8 @@ export function mountAddonActions(root,{api,refresh=async()=>{},toast=()=>{}}){
     finally{busy=false;if(scope.isConnected)sync();}
   });
   sync();
+  if(scope.dataset.adminAddon)syncGrant();
+  if(scope.dataset.adminAddon&&scope.querySelector('[data-addon-controls]')){
+    void showControls(scope.querySelector('[data-addon-installed]'),'view',{});
+  }
 }

@@ -49,6 +49,9 @@ function encryptForTest(signed,key){
  return [h,wrap,nonce,Buffer.concat([aes.update(signed,'utf8'),aes.final()]),aes.getAuthTag()].map(part=>typeof part==='string'?part:part.toString('base64url')).join('.');
 }
 async function setup(t,{encrypted=false}={}){
+ // Windows requires the host to release SQLite before the temporary directory is removed.
+ let suite;
+ t.after(()=>suite?.close());
  const root=await folder(t),database=join(root,'fictional.sqlite');let now=day;
  const fx=await activationFixture(root,{clock:()=>now});
  let recipient;
@@ -71,7 +74,7 @@ async function setup(t,{encrypted=false}={}){
   }
  });}finally{db.close();}
  const launch=()=>createSuite({database,mainPort:0,workerPort:0,supportOptions:{documentationRoot:legacy,contextualRoot:contextual},activationOptions:fx.options});
- let suite=await launch();t.after(()=>suite.close());
+ suite=await launch();
  return {fx,encrypt:(code,key=recipient?.publicKey)=>encryptForTest(code,key),company,employee,state,database,advance:n=>{now+=n;},get suite(){return suite;},async restart(){await suite.close();suite=await launch();}};
 }
 async function request(origin,route,{session,body}={}){

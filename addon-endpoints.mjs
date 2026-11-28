@@ -3,7 +3,7 @@
 const basePermissions = new Set(['settings', 'service.runtime', 'service.controls', 'network.https',
   'workspace.read', 'workspace.write', 'workspace.write.auto']);
 const hostPrefixes = new Set(['api', 'audit', 'kiosk', 'legal', 'shared', 'setup', 'worker', 'main']);
-const installerPaths = new Set(['review', 'apply', 'restart', 'settings', 'invoke', 'controls', 'write-policy', 'approve-write']);
+const installerPaths = new Set(['review', 'apply', 'restart', 'settings', 'invoke', 'controls', 'write-policy', 'approve-write','listener','delegation','remove']);
 
 export function isOwnerRoute(path) {
   const match = /^\/api\/addons\/([a-z][a-z0-9-]{0,63})$/.exec(path);

@@ -31,6 +31,39 @@ bind review to exact bytes, live grants and revision history. A lower revision
 or conflicting bytes at the same high-water revision are rejected. Supervisor
 rollback may restore only previously accepted exact bytes with a live grant.
 
+### Administration pages and listeners
+
+An installed, eligible package has an owner-only Administration page keyed by
+package ID. Its optional signed `adminPage` field sets the display label (1–64
+characters). Existing packages use their signed name. The page renders typed
+settings, service controls, and per-package write approvals. Packages handles
+installation, updates, restarts and removal. Removing an add-on drops its
+approval, proposals and settings and preserves its signed revision high-water mark.
+
+For a service with `adminPage`, `service.controls` and signed external routes,
+the owner can save a distinct HTTPS origin and loopback socket. Start and Stop
+affect this package's listening socket. Each host launch starts with the socket
+closed. The operator's TLS proxy must preserve the public hostname. The existing
+bounded HTTP forwarding, route permissions and AppContainer apply on that socket.
+The host supplies the configured origin as `endpointOrigin` in owner controls.
+
+### Delegated operations
+
+Services with a signed `adminPage` use named operations for workspace access.
+The owner selects a client, effective account, company and allowed actions.
+`GET /api/addons/delegation?id=PACKAGE_ID` returns the available operations,
+roles and current selection to the approving Corporate owner. For a broker read
+the service sends `{clientId, operation, companyId, arguments}`. Writes also
+carry the originating service's live authorization handle. The host constructs
+the normal ERP request, uses the effective account's portal and returns the
+operation's projected result. The host checks grants when proposing and again
+when dispatching, including for automatic writes. The empty company scope
+permits workspace status and first-company creation. Grant the new company's ID
+before using project, task or journal operations.
+
+An active composite license can authorize up to 16 package IDs. Include the
+existing paid modules and all intended add-on grants when replacing it.
+
 ## Package format
 
 A `.fqaddon` is UTF-8 JSON with exactly `signed` and `signature` fields. Both
@@ -174,5 +207,5 @@ the exact package hashes and each completed stage. This gate passed on the
 standard-user test host with a real signed fictional Node service, without a
 mock supervisor. Cached v1 also survived another restart after the drop files
 were removed. Feature-level behavior and
-automation rules belong to the feature package and its owner settings; the
-installer adds no ledger- or employee-specific operation restrictions.
+automation rules belong to the feature package and its owner settings. The
+delegated operation catalog in `addon-delegation.mjs` defines the host grants.

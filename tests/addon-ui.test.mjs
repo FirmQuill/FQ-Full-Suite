@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {addonPanel,mountAddonActions} from '../web/main/addon-ui.mjs';
+import {addonPanel,addonPage,mountAddonActions} from '../web/main/addon-ui.mjs';
 
 const receipt='a'.repeat(64);
 const candidate={id:'fictional-service',name:'Fictional service',revision:2,type:'service',permissions:['read:fictional-report'],eligible:true,reason:'Ready for review',restartRequired:true};
@@ -47,7 +47,10 @@ test('add-on panel escapes package metadata, reasons, settings and installation 
   }],candidates:[{...candidate,name:malicious,permissions:[malicious,{scope:malicious}]}]});
   assert.doesNotMatch(markup,/<(?:script|img)\b/);
   assert.match(markup,/&lt;img src=x onerror=&quot;alert\(1\)&quot;&gt;/);
-  assert.match(markup,/value="&quot;&gt;&lt;img/);
+  assert.doesNotMatch(markup,/data-addon-settings-form/);
+  const page=addonPage({installed:{id:malicious,name:malicious,settingsSchema:[{key:'message',label:malicious,type:'string',default:malicious,maxLength:300}]}});
+  assert.match(page,/value="&quot;&gt;&lt;img/);
+  assert.doesNotMatch(page,/<(?:script|img)\b/);
   assert.match(markup,/data-addon-id="&quot;&gt;&lt;img/);
   assert.match(markup,/&quot;scope&quot;:&quot;/);
   assert.doesNotMatch(markup,/data-addon-action="apply"/,'unreviewed candidates cannot be applied');
@@ -55,7 +58,7 @@ test('add-on panel escapes package metadata, reasons, settings and installation 
 
 test('only bounded declarative settings types create controls; unsupported schemas fail closed',()=>{
   const valid=[{key:'label',label:'Report label',type:'string',default:'Fictional',maxLength:80},{key:'enabled',label:'Enabled',type:'boolean',default:true},{key:'interval',label:'Interval',type:'integer',default:4,min:1,max:10}];
-  const render=schema=>addonPanel({configured:true,installed:[{id:'fixture',revision:1,type:'data',settingsSchema:schema}]});
+  const render=schema=>addonPage({installed:{id:'fixture',revision:1,type:'data',settingsSchema:schema}});
   const markup=render(valid);
   assert.match(markup,/type="text" name="addon-setting-0" value="Fictional" maxlength="80"/);
   assert.match(markup,/type="checkbox" name="addon-setting-1" checked/);
@@ -149,7 +152,7 @@ test('a failed restart reported with rollback is shown as incomplete rather than
 
 test('workspace write preview renders exact path and JSON as escaped text and offers approval only for pending requests',()=>{
   const body={companyId:'fictional-company',action:{type:'note',text:'<script>never run()</script> & "review"'}};
-  const render=status=>addonPanel({configured:true,installed:[{id:candidate.id,name:candidate.name,revision:1,type:'service',status:'active',writeProposals:[{id:'fictional-proposal',path:'action?scope=<fictional>',body,digest:receipt,status,reason:'Owner must review <exact> contents.'}]}]});
+  const render=status=>addonPage({installed:{id:candidate.id,name:candidate.name,revision:1,type:'service',status:'active',writeProposals:[{id:'fictional-proposal',path:'action?scope=<fictional>',body,digest:receipt,status,reason:'Owner must review <exact> contents.'}]}});
   const markup=render('pending');
   assert.match(markup,/Operation: <code>action\?scope=&lt;fictional&gt;<\/code>/);
   assert.match(markup,/&quot;companyId&quot;: &quot;fictional-company&quot;/);
@@ -185,17 +188,17 @@ test('a workspace broker rejection stays visible and is never retried automatica
 
 test('automatic workspace write policy defaults to review despite package permission and clearly displays enabled state',()=>{
   const addon={id:candidate.id,name:candidate.name,revision:1,type:'service',status:'active',permissions:['settings','workspace.write.auto']};
-  const markup=addonPanel({configured:true,installed:[addon]});
+  const markup=addonPage({installed:addon});
   assert.match(markup,/name="autoApproveWrites"> Allow automatic workspace writes for this add-on/);
   assert.doesNotMatch(markup,/name="autoApproveWrites" checked/);
   assert.match(markup,/data-addon-policy-approve required> I approve this write policy/);
   assert.match(markup,/data-addon-action="write-policy" disabled>Save policy/);
   assert.doesNotMatch(markup,/<strong>Automatic workspace writes enabled/);
-  const enabled=addonPanel({configured:true,installed:[{...addon,writeMode:'automatic',writeProposals:[{id:'old-request',path:'action',body:{},digest:receipt,status:'pending'}]}]});
+  const enabled=addonPage({installed:{...addon,writeMode:'automatic',writeProposals:[{id:'old-request',path:'action',body:{},digest:receipt,status:'pending'}]}});
   assert.match(enabled,/<strong>Automatic workspace writes enabled<\/strong>/);
   assert.match(enabled,/name="autoApproveWrites" checked/);
   assert.doesNotMatch(enabled,/data-addon-action="approve-write"/,'per-operation approval controls are used in review mode');
-  assert.doesNotMatch(addonPanel({configured:true,installed:[{...addon,permissions:['settings','workspace.write']}]}),/data-addon-write-policy/);
+  assert.doesNotMatch(addonPage({installed:{...addon,permissions:['settings','workspace.write']}}),/data-addon-write-policy/);
 });
 
 test('automatic write policy requires separate owner confirmation and never submits on checkbox change',async()=>{
@@ -222,14 +225,14 @@ test('review includes escaped signed HTTPS destinations and withholds Apply when
   const missing=fixture({review:{receipt,candidates:[{...candidate,permissions:['settings','network.https']}],errors:[]}});missing.mount();await missing.click(missing.reviewButton);
   assert.match(missing.reviewSlot.innerHTML,/destination list is unavailable/);
   assert.doesNotMatch(missing.reviewSlot.innerHTML,/data-addon-action="apply"/);
-  const installed=addonPanel({configured:true,installed:[{...candidate,status:'active',permissions:['network.https'],network}]});
+  const installed=addonPage({installed:{...candidate,status:'active',permissions:['network.https'],network}});
   assert.match(installed,/Approved HTTPS destinations/);assert.match(installed,/https:\/\/api\.fictional\.example/);
 });
 
 test('only available controls can open and every action refreshes the panel with escaped content',async()=>{
-  const markup=controls=>addonPanel({configured:true,installed:[{id:candidate.id,name:candidate.name,controls}]});
+  const markup=controls=>addonPage({installed:{id:candidate.id,name:candidate.name,controls}});
   assert.doesNotMatch(markup(false),/data-addon-action="controls"/);
-  assert.match(markup(true),/Open Fictional service controls/);
+  assert.match(markup(true),/Refresh package controls/);
   const x=fixture(),slot={innerHTML:'',querySelector:()=>null};
   const card={dataset:{addonId:candidate.id},querySelector:()=>slot};
   const open=x.button('controls',card);

@@ -220,9 +220,21 @@ continue to use that configuration.
    folder. In **Packages**, choose **Upload signed license** and select
    the matching `.fqlicense`.
 3. In **Packages**, choose **Review add-on folder**, read the permissions,
-   check the approval box and choose **Apply add-on**. The installed card
-   shows the controls provided by the licensed add-on. Use **Version Upgrade** or
-   **Packages** to upload a future renewal.
+   check the approval box and choose **Apply add-on**. Open the package's own
+   page under **Administration** for settings and permissions. Return to
+   **Packages** to review updates, approve a service restart or remove an add-on.
+4. For a package with a separate client endpoint, save its HTTPS origin,
+   loopback address and port on its Administration page. Configure your HTTPS
+   proxy to forward that hostname to the selected port and preserve the Host
+   header. Choose **Start listener**. **Stop listener** closes that port while
+   Corporate and Worker continue serving. The address persists across host
+   restarts. The listener starts stopped.
+5. For delegated workspace tools, pair a client and grant it an effective
+   account and individual operations. Use **Workspace setup** for first-company
+   creation. After creating the company, refresh the page and grant access
+   to that company. Its employees' portal access and normal approval rules apply.
+   A license renewal can include multiple add-ons. Include every package and
+   paid module you intend to keep in the replacement entitlement.
 
 ### Optional manual package folder
 

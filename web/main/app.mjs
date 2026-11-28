@@ -2,7 +2,7 @@ import {visibleNavigation,navigationGroupMarkup,workflowOnSidebar} from './navig
 import {kioskPanel,kioskAction} from './time-kiosk-ui.mjs';
 import {bindPasskeyLogin,bindPasskeyManagement} from '/shared/passkeys-ui.mjs';
 import {activationPanel,activationAction,packagesPanel,mountLicenseUpload,renderRenewalNotice} from './activation-ui.mjs';
-import {addonPanel,mountAddonActions} from './addon-ui.mjs';
+import {addonPanel,addonPage,mountAddonActions} from './addon-ui.mjs';
 import {csvRecoveryPanel,csvRecoveryAction} from './csv-recovery-ui.mjs';
 import {mountContextualHelp} from '/shared/contextual-help-ui.mjs';
 import {backupContent,backupAction} from './backup-admin.mjs';
@@ -99,11 +99,14 @@ function useSession(next){
 function setupFields(){return `<fieldset><legend>What does this company do?</legend>${choices('activities',acts)}</fieldset><div class="callout small"><b>Featured workflows</b><p id="suggested">Accounting · Reports</p></div>`;}
 function previewSettings(form){const out=form.querySelector('#suggested');if(out)out.textContent=recommended(new FormData(form).getAll('activities')).join(' · ');}
 function auditAccess(){return session?.user.role==='owner'||session?.user.workspaces?.includes('Inventory audit');}
+const packagePages=()=>session?.user.role==='owner'?(session.addonPages||[]):[];
+const pagePackage=key=>packagePages().find(addon=>key==='addon/'+addon.id);
+const pageLabel=key=>pagePackage(key)?.label||key;
 function suitePages(){
   const role=session.user.role;
   if(auditPortal)return auditAccess()?['Inventory audit','Setup help']:[];
   const workforce=['Employee records',...(['owner','hr','payroll'].includes(role)?['Benefits administration']:[])];
-  const pages=role==='owner'?['Approvals','User access','Time clock kiosk','Audit trail','Portable transfers','Managed backups','Version Upgrade','Packages',...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
+  const pages=role==='owner'?['Approvals','User access','Time clock kiosk','Audit trail','Portable transfers','Managed backups','Version Upgrade','Packages',...packagePages().map(addon=>'addon/'+addon.id),...workforce,'Identity connectors']:role==='manager'?['Approvals','Audit trail',...workforce]:role==='bookkeeper'?['Approvals']:['hr','payroll'].includes(role)?workforce:[];
   return [...(session.user.workspaces||[]),...pages.filter(p=>role==='owner'||session.user.areas?.includes(p)),...(companyId&&(role==='owner'||session.user.areas?.includes('Drives'))?['Drives']:[]),...(role==='owner'?['Migration workspace','Planning']:[]),'Setup help'];
 }
 function setup(c){return panel('Company profile',`<p><b>${esc(c.name)}</b></p><p class="quiet">${acts.filter(([v])=>c.activities.includes(v)).map(([,n])=>esc(n)).join(' · ')||'No activities selected'}</p><div class="rule"></div><p>Featured on the overview and sidebar</p><p>${esc(c.featured.join(' · ')||'None')}</p>`,btn('settings','Edit profile'))+
@@ -134,18 +137,32 @@ async function loadPage(){
     catch(err){if(generation===loadGeneration){auxiliary={error:err.message};render();}}
     return;
   }
+  const addon=pagePackage(page);
+  if(addon){
+    try{
+      const status=await api('addons');
+      if(generation!==loadGeneration)return;
+      const installed=status.installed.find(p=>p.id===addon.id&&p.pageLabel);
+      if(!installed)throw Error('This package is unavailable. Refresh the workspace to see current pages.');
+      const delegated=installed.adminPage&&installed.permissions?.some(p=>p==='workspace.read'||p==='workspace.write');
+      const grants=delegated?await api('addons/delegation?id='+encodeURIComponent(addon.id)):null;
+      if(generation!==loadGeneration)return;
+      auxiliary={installed,grants};render();
+    }catch(error){if(generation===loadGeneration){auxiliary={error:error.message};render();}}
+    return;
+  }
   if(!session||!endpoints[page])return;
   try{const response=await api(endpoints[page]+(['Time clock kiosk','Employee records','Benefits administration','Identity connectors','Departments','Project tracker','Assets & pallets','Inventory audit','Purchase requests','Time off review','Planning','Company knowledge','Messages','Collaboration groups'].includes(page)?'?companyId='+encodeURIComponent(companyId)+(page==='Inventory audit'?'&auditOnly=true':''):''));if(generation!==loadGeneration)return;auxiliary=response;render();}
   catch(err){if(generation===loadGeneration){auxiliary={error:err.message};render();}}
 }
 function navButton(key){
-  return `<button type="button" data-act="nav" data-key="${esc(key)}"${!sectionPage&&page===key?' class="active" aria-current="page"':''}>${esc(key)}</button>`;
+  return `<button type="button" data-act="nav" data-key="${esc(key)}"${!sectionPage&&page===key?' class="active" aria-current="page"':''}>${esc(pageLabel(key))}</button>`;
 }
 function groupMarkup(g){
   return navigationGroupMarkup(g,{open:!collapsedGroups.has(g.id),active:sectionPage===g.id,links:g.links.map(navButton).join(''),create:g.canCreateCompany?btn('company','Create company'):''});
 }
 function groupDashboard(g){
-  const cards=g.links.map(key=>'<article class="fq-section-card"><h2>'+esc(key)+'</h2>'+btn('nav','Open '+key,key)+'</article>').join('');
+  const cards=g.links.map(key=>'<article class="fq-section-card"><h2>'+esc(pageLabel(key))+'</h2>'+btn('nav','Open '+pageLabel(key),key)+'</article>').join('');
   return '<div class="card"><p>'+esc(g.description)+'</p><div class="fq-section-grid">'+cards+(g.canCreateCompany?'<article class="fq-section-card"><h2>Company administration</h2>'+btn('company','Create company','','primary')+'</article>':'')+'</div></div>';
 }
 function roleFilter(root){
@@ -175,6 +192,7 @@ function render(){
   else if(page==='Time clock kiosk'&&full.includes(page))body=c?kioskPanel(auxiliary):panel(page,'<p>Create or select a company first.</p>');
   else if(page==='Version Upgrade'&&full.includes(page))body=activationPanel(auxiliary);
   else if(page==='Packages'&&full.includes(page))body=activationPanel(auxiliary)+addonPanel(auxiliary?.addons)+packagesPanel(auxiliary);
+  else if(pagePackage(page)&&full.includes(page))body=addonPage(auxiliary);
   else if(page==='Report builder'&&full.includes(page))body='<div id="report-packet-workspace"></div>';
   else if(page==='Company knowledge'&&full.includes(page))body=mainKnowledgeContent(auxiliary,c);
   else if(page==='Planning'&&full.includes(page))body=c?(auxiliary?.error?panel('Planning unavailable','<p>'+esc(auxiliary.error)+'</p>'):auxiliary?renderPlanning(c,auxiliary.day,auxiliary):panel('Planning','<p>Loading company planning…</p>')):panel('Planning','<p>Create a company first.</p>');
@@ -195,14 +213,16 @@ function render(){
   if(auditPortal&&!auditAccess())body=panel('Asset workspace unavailable.','<p>Ask the company owner for access to the asset audit workspace.</p>');
   if(c?.projectScope==='permitted-records')body='<div class="callout"><p>These views and totals include only records permitted for your account. Ask the owner for a complete company close.</p></div>'+body;
   const picker=c?`<label for="company">Company</label><select id="company" aria-label="Active company" class="picker">${options(mapping(s.companies))}</select>`:'';
-  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><a class="sidebarfoot small fq-legal-link" href="/legal/legal.html" target="_blank" rel="noopener">Legal</a></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}${!auditPortal&&['owner','manager'].includes(user.role)?'<div data-passkey-management></div>':''}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1${activeGroup?' data-department-heading tabindex="-1"':''}>${activeGroup?esc(activeGroup.title)+' overview':page==='Overview'?'Workspace overview':esc(page)}</h1></div>${!activeGroup&&c&&page==='Overview'&&allowed('Sales')?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&page!=='Version Upgrade'&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
+  app.innerHTML=`<div class="shell${menu?' menu':''}"><aside>${brand}<nav aria-label="Workspace">${nav}</nav><a class="sidebarfoot small fq-legal-link" href="/legal/legal.html" target="_blank" rel="noopener">Legal</a></aside><div class="maincol"><header class="toolbar"><div class="toolgroup">${btn('menu','Menu','','mobilemenu')}${picker}</div><div class="toolgroup"><span class="quiet small">${esc(user.name)} · ${esc(pretty(user.role))}</span>${btn('refresh','Refresh')}${btn('logout','Sign out')}${!auditPortal&&['owner','manager'].includes(user.role)?'<div data-passkey-management></div>':''}</div></header><div class="workspace"><div class="pagehead"><div><p class="eyebrow">${esc(c?.name||'FirmQuill')}</p><h1${activeGroup?' data-department-heading tabindex="-1"':''}>${activeGroup?esc(activeGroup.title)+' overview':page==='Overview'?'Workspace overview':esc(pageLabel(page))}</h1></div>${!activeGroup&&c&&page==='Overview'&&allowed('Sales')?btn('quote','New quote','','primary'):''}<div id="contextual-help"></div></div>${!auditPortal&&page!=='Version Upgrade'&&user.role==='owner'&&session.moduleRenewal?'<div id="module-renewal" aria-live="polite"></div>':''}<div class="error" role="alert"></div>${body}</div></div></div>`;
   if(session.contextualHelpCandidate&&!activeGroup&&(!auditPortal||auditAccess()))mountContextualHelp(app.querySelector('#contextual-help'),{page,companyId,api});
   bindPasskeyManagement(app.querySelector('[data-passkey-management]'),api);
   if(!activeGroup&&['Version Upgrade','Packages'].includes(page)){
     const uploadPage=page;
     mountLicenseUpload(app,{api,refresh:async result=>{const data=await api('session');if(page===uploadPage){useSession(data);auxiliary=result;render();}}});
   }
-  if(!activeGroup&&page==='Packages')mountAddonActions(app,{api,refresh:loadPage,toast});
+  if(!activeGroup&&(page==='Packages'||pagePackage(page)))mountAddonActions(app,{api,refresh:async()=>{
+    useSession(await api('session'));await loadPage();
+  },toast});
   const renewalSlot=app.querySelector('#module-renewal');
   if(renewalSlot){
     const paint=()=>{

@@ -58,6 +58,7 @@ async function browserProof(t,settingsOnly){
   await upgrade.getByText(/Missing packages|Package error/).waitFor();
   await navigate('Packages');await review();await apply(settingsId);
 
+  await page.locator('nav [data-key="addon/'+settingsId+'"]').click();
   const form=installed(settingsId).locator('[data-addon-settings-form]');
   await form.locator('input[type=text]').fill('Owner reviewed fixture');
   const save=form.getByRole('button',{name:'Save add-on settings',exact:true});assert.equal(await save.isDisabled(),true);
@@ -86,7 +87,7 @@ async function browserProof(t,settingsOnly){
     t.diagnostic('PASS settings-only browser proof. NOTRUN native service, service restart, runtime workspace broker and automatic runtime writes: supervisor blocked. Screenshots: '+screenshots);
     return;
   }
-  await review();await apply(serviceId);
+  await navigate('Packages');await review();await apply(serviceId);
   await installed(serviceId).getByText('active',{exact:true}).waitFor();
   assert.equal(await installed(serviceId).getByRole('button',{name:'Approve restart',exact:true}).count(),0,'initial Apply does not invent a second restart');
   await page.screenshot({path:join(screenshots,'01-installed-addons-and-settings.png'),fullPage:true});

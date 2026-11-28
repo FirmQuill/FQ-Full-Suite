@@ -6,23 +6,29 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createSuite} from '../server.mjs';
 import {createAddonWorkspaceBridge} from '../addon-workspace-broker.mjs';
+import {createAddonDelegation} from '../addon-delegation.mjs';
 import {openStore,saveBooks,putUser,passwordHash} from '../store.mjs';
 import {sampleVault} from '../shared/sample.mjs';
 import {fixtureAgreement} from './fixture-terms.mjs';
 
-async function fixture(t,{publicOrigins=false}={}){
+async function fixture(t,{publicOrigins=false,scopedAccounts=false}={}){
   const root=await mkdtemp(join(tmpdir(),'fq-addon-workspace-')),database=join(root,'fictional.sqlite'),password='Fictional delegated workspace verification.';let suite;
   t.after(async()=>{try{await suite?.close();}finally{await rm(root,{recursive:true,force:true});}});
   const state=sampleVault(),companyId=state.companies[0].id,db=openStore(database),hash=await passwordHash(password),ids={};
-  try{saveBooks(db,state);for(const role of ['owner','manager'])ids[role]=putUser(db,null,{username:role,name:'Fictional '+role,role,assignments:role==='owner'?[]:[companyId]},hash,{bootstrap:true});}finally{db.close();}
+  try{
+    saveBooks(db,state);
+    const roles=scopedAccounts?['owner','manager','bookkeeper','worker']:['owner','manager'];
+    for(const role of roles)ids[role]=putUser(db,null,{username:role,name:'Fictional '+role,role,assignments:role==='owner'?[]:[companyId],...(role==='worker'?{employeeId:state.companies[0].employees[0].id}:{})},hash,{bootstrap:true});
+  }finally{db.close();}
   let bridge,context;
   const mainOrigin=publicOrigins?'https://books.fictional.example.com':undefined,workerOrigin=publicOrigins?'https://workers.fictional.example.com':undefined;
   suite=await createSuite({database,mainPort:0,workerPort:0,mainOrigin,workerOrigin,workspaceBridgeFactory:options=>{context=options;bridge=createAddonWorkspaceBridge(options);return bridge;},planningClock:()=> '2026-11-27'});
   assert.equal(typeof bridge,'function','createSuite must invoke the trusted workspaceBridgeFactory hook with its real session Map.');
   const login=async(role,{accept=true}={})=>{
-    const headers={Host:mainOrigin?new URL(mainOrigin).host:new URL(suite.mainUrl).host,Origin:mainOrigin||suite.mainUrl,'Content-Type':'application/json'};
-    const response=await fetch(suite.mainUrl+'/api/login',{method:'POST',headers,body:JSON.stringify({username:role,password})}),data=await response.json();assert.equal(response.status,200,JSON.stringify(data));
-    if(data.termsRequired&&accept){const r=await fetch(suite.mainUrl+'/api/terms',{method:'POST',headers:{...headers,Cookie:response.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':data.csrf},body:JSON.stringify(fixtureAgreement)});assert.equal(r.status,200);await r.json();}
+    const url=role==='worker'?suite.workerUrl:suite.mainUrl,origin=(role==='worker'?workerOrigin:mainOrigin)||url;
+    const headers={Host:new URL(origin).host,Origin:origin,'Content-Type':'application/json'};
+    const response=await fetch(url+'/api/login',{method:'POST',headers,body:JSON.stringify({username:role,password})}),data=await response.json();assert.equal(response.status,200,JSON.stringify(data));
+    if(data.termsRequired&&accept){const r=await fetch(url+'/api/terms',{method:'POST',headers:{...headers,Cookie:response.headers.get('set-cookie').split(';')[0],'X-CSRF-Token':data.csrf},body:JSON.stringify(fixtureAgreement)});assert.equal(r.status,200);await r.json();}
   };
   const approval=()=>({id:ids.owner,authVersion:context.db.prepare('SELECT authVersion FROM accounts WHERE id=?').get(ids.owner).authVersion});
   const request=(op,input,override={})=>bridge(op,input,{approval:approval(),addonId:'fictional-ai',...override});
@@ -43,6 +49,59 @@ test('real delegated workspace APIs read books/accounts, write a balanced ledger
   const events=x.context.db.prepare("SELECT detail FROM audit WHERE kind IN ('add-on workspace read','add-on workspace write')").all().map(e=>JSON.parse(e.detail)),writes=events.filter(e=>e.operation==='workspace.write'&&e.outcome==='success');
   assert.deepEqual(writes.map(e=>e.route),['/api/action','/api/action','/api/company-knowledge']);assert.ok(events.some(e=>e.operation==='workspace.read'&&e.outcome==='success'));assert.ok(events.every(e=>e.addonId==='fictional-ai'&&e.ownerId===x.ids.owner&&typeof e.requestId==='string'));assert.doesNotMatch(JSON.stringify(events),/12345|Owner-authorized|Fictional delegated employee/);
   const visibleAudit=await x.request('workspace.read',{path:'/api/audit'});assert.ok(visibleAudit.events.some(e=>e.kind==='add-on workspace write'&&JSON.parse(e.detail).outcome==='success'),'Delegated outcomes are available through the ordinary audit API.');
+});
+
+test('scoped grants bind the client, company and actor through the normal worker and accounting portals',async t=>{
+  const f=await fixture(t,{scopedAccounts:true});
+  await f.login('owner');await f.login('worker');await f.login('bookkeeper');
+  const owner=f.approval(),addonId='fictional-companion',clientId='fictional-client',companyId=f.companyId;
+  const binding={digest:'1'.repeat(64),ownerId:owner.id,ownerVersion:owner.authVersion,permissions:['workspace.read','workspace.write']};
+  const grants=createAddonDelegation(f.context);
+  const configure=(actor,actions)=>grants.configure({id:addonId,confirm:true,clientId,companyId,accountId:f.ids[actor],actions},binding,owner);
+  function resolve(op,operation,args={},changes={}){
+    return grants.resolve(op,{clientId,companyId,operation,arguments:args,...changes},addonId,()=>binding);
+  }
+  async function run(op,operation,args){
+    const delegated=resolve(op,operation,op==='workspace.write'?{requestId:randomUUID(),...args}:args);
+    if(op==='workspace.write')delegated.recordAttempt(randomUUID());
+    return f.request(op,delegated.request,{delegated,addonId});
+  }
+  configure('owner',['admin.employees-read','admin.employee-features','admin.employee-erp']);
+  const employees=await run('workspace.read','admin.employees-read');
+  const employeeId=f.context.db.prepare('SELECT employeeId FROM accounts WHERE id=?').get(f.ids.worker).employeeId;
+  assert.ok(employees.employees.some(e=>e.id===employeeId));
+  await run('workspace.write','admin.employee-features',{employeeId,features:['Time','Time off','Reviews']});
+  await run('workspace.write','admin.employee-erp',{employeeId,enabled:true,areas:['Overview']});
+  configure('worker',['worker.status','worker.clock-in','worker.clock-out','worker.leave-read','worker.leave-submit','worker.leave-withdraw','worker.reviews-read']);
+  assert.throws(()=>configure('worker',['ledger.post']),{status:403});
+  assert.throws(()=>resolve('workspace.read','worker.status',{},{companyId:'elsewhere'}),{status:403});
+  assert.throws(()=>resolve('workspace.read','worker.status',{},{clientId:'unpaired'}),{status:403});
+  assert.throws(()=>resolve('workspace.write','worker.clock-correction'),{status:403});
+  assert.throws(()=>resolve('workspace.write','worker.clock-in',{companyId,requestId:randomUUID()}),{status:400});
+  const original=resolve('workspace.read','worker.status');
+  const worker=await run('workspace.read','worker.status');
+  assert.equal(worker.role,'worker');assert.equal(worker.companyId,companyId);assert.ok(worker.jobs.length);assert.equal(worker.openShift,null);
+  const punch={jobId:worker.jobs[0].id,requestId:randomUUID()};
+  await run('workspace.write','worker.clock-in',punch);
+  const current=await run('workspace.read','worker.status');
+  assert.ok(current.openShift.id);await run('workspace.write','worker.clock-out',{shiftId:current.openShift.id});
+  const request=await run('workspace.read','worker.leave-read');
+  await run('workspace.write','worker.leave-submit',{from:'2027-01-04',through:'2027-01-04',category:request.categories[0]});
+  const leave=(await run('workspace.read','worker.leave-read')).requests[0];
+  assert.ok(leave.id);await run('workspace.write','worker.leave-withdraw',{id:leave.id,version:leave.version});
+  assert.deepEqual((await run('workspace.read','worker.reviews-read')).reviews,[]);
+  await assert.rejects(()=>run('workspace.write','worker.clock-in',punch),{status:409});
+  configure('bookkeeper',['workspace.status','ledger.post']);
+  assert.throws(()=>original.check(),{status:403});
+  const books=await run('workspace.read','workspace.status');
+  assert.deepEqual(Object.keys(books).sort(),['companyId','companyName','revision','role']);assert.equal(books.role,'bookkeeper');
+  const posted=await run('workspace.write','ledger.post',{revision:books.revision,requestId:randomUUID(),date:'2026-11-27',label:'Approval check',lines:[['1000',5600],['3000',-5600]],flow:'Financing'});
+  assert.ok(posted.pendingApproval);
+  assert.equal(f.context.db.prepare('SELECT requestedBy FROM approvals WHERE id=?').get(posted.pendingApproval).requestedBy,f.ids.bookkeeper);
+  const event=f.context.db.prepare("SELECT actor,detail FROM audit WHERE kind='add-on workspace write' AND companyId=? ORDER BY rowid DESC LIMIT 1").get(companyId);
+  assert.equal(event.actor,f.ids.bookkeeper);assert.equal(JSON.parse(event.detail).ownerId,owner.id);
+  grants.revoke(addonId);
+  assert.throws(()=>resolve('workspace.read','workspace.status'),{status:403});
 });
 
 test('delegated owner authorization is checked fresh for every request and retains no session on role, auth-version or Terms rejection',{timeout:30000},async t=>{

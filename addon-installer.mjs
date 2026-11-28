@@ -6,13 +6,13 @@ import {fileURLToPath} from 'node:url';
 import {execFile} from 'node:child_process';
 import {promisify} from 'node:util';
 import {startAddonService} from './addon-service-host.mjs';
-import {validAddonPermissions,serviceOrigin} from './addon-endpoints.mjs';
+import {validAddonPermissions,serviceOrigin,isExternalRoute} from './addon-endpoints.mjs';
 import {addonHttps} from './addon-network-broker.mjs';
 
 const exec=promisify(execFile), app=dirname(fileURLToPath(import.meta.url));
 const MAX=2*1024*1024, idPattern=/^[a-z][a-z0-9-]{2,63}$/, hex=/^[a-f0-9]{64}$/;
 const guardHandle=/^[A-Za-z0-9_-]{43}$/;
-const proposalHash=(id,p)=>digest(JSON.stringify([id,p.runtime,p.id,p.path,p.body,...(p.authorization?[p.authorization]:[])]));
+const proposalHash=(id,p)=>digest(JSON.stringify([id,p.runtime,p.id,p.path,p.body,...(p.authorization?[p.authorization]:[]),...(p.scope?[p.scope]:[])]));
 const digest=b=>createHash('sha256').update(b).digest('hex');
 const fail=(message,status=409)=>{throw Object.assign(Error(message),{status});};
 const need=(value,message)=>{if(!value)fail(message);};
@@ -31,7 +31,9 @@ export function inspectAddon(bytes,key,{installationId,runtime='0.6.5'}={}){
   need(exact(envelope,['signed','signature']),'Invalid signed envelope.');const signed=decode(envelope.signed),signature=decode(envelope.signature);
   need(signature.length===64&&verify(null,signed,key,signature),'Publisher signature did not verify.');
   let p;try{p=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(signed));}catch{fail('Invalid signed manifest.');}
-  need(exact(p,['format','id','name','revision','installationId','compatibility','type','permissions','settings','files','network'])&&p.format==='firmquill.addon.v1','Unsupported add-on format.');
+  const pageFields=p&&Object.hasOwn(p,'adminPage')?['adminPage']:[];
+  need(exact(p,['format','id','name','revision','installationId','compatibility','type','permissions','settings','files','network',...pageFields])&&p.format==='firmquill.addon.v1','Unsupported add-on format.');
+  need(!pageFields.length||(typeof p.adminPage==='string'&&p.adminPage.trim()===p.adminPage&&p.adminPage.length>=1&&p.adminPage.length<=64&&!/[\x00-\x1f\x7f]/.test(p.adminPage)),'Invalid Administration page label.');
   need(typeof p.id==='string'&&idPattern.test(p.id)&&typeof p.name==='string'&&p.name.length>0&&p.name.length<=80&&Number.isSafeInteger(p.revision)&&p.revision>0,'Invalid add-on identity or revision.');
   need(p.installationId===installationId&&hex.test(installationId),'Add-on belongs to another installation.');
   need(exact(p.compatibility,['min','max','hostApi'])&&p.compatibility.hostApi===1,'Unsupported service interface.');
@@ -65,12 +67,21 @@ async function protectWindows(state,keyFile,fresh){
   need(result.stdout.trim()==='protected','Add-on state permissions could not be verified.');
 }
 export function addonOptionsFromEnv(env=process.env){return {publisherKey:env.FIRMQUILL_ADDON_PUBLISHER_PUBLIC_KEY||env.FIRMQUILL_PACKAGE_PUBLISHER_PUBLIC_KEY,directory:env.FIRMQUILL_PACKAGES_DIR||join(app,'packages')};}
-export async function createAddonInstaller({directory=join(app,'packages'),publisherKey,activationDirectory,activation,runtime='0.6.5',protectedPaths=[],authorizeRuntime=()=>{},serviceStart=startAddonService,workspaceBridge=async()=>{throw Error('Workspace API bridge unavailable.');},httpsTransport,monitorMs=1000}={}){
+export async function createAddonInstaller({directory=join(app,'packages'),publisherKey,activationDirectory,activation,runtime='0.6.5',protectedPaths=[],authorizeRuntime=()=>{},serviceStart=startAddonService,workspaceBridge=async()=>{throw Error('Workspace API bridge unavailable.');},delegation,httpsTransport,monitorMs=1000}={}){
   let key,stateRoot,lock,problem='',busy=false,closed=false,timer,inFlight=Promise.resolve();let state={format:1,installed:{}},services=new Map();
   const installationId=activation?.status().installationId;
   const permitted=p=>activation.addonAllows(p.id,p.revision,p.permissions);
+  const pageInfo=new Map();
+  function remember(p) {
+    const {id,name,adminPage,revision,permissions}=p.manifest;
+    pageInfo.set(p.digest,{id,name,adminPage,revision,permissions});
+  }
+  function adminPages() {
+    if(problem||closed)return [];
+    return Object.values(state.installed).map(row=>pageInfo.get(row.active)).filter(p=>p&&permitted(p)).map(p=>({id:p.id,label:p.adminPage||p.name}));
+  }
   const cachePath=d=>{need(hex.test(d),'Invalid cached package identity.');return join(stateRoot,d+'.fqaddon');};
-  async function cached(d){const p=inspectAddon(await bounded(cachePath(d)),key,{installationId,runtime});need(p.digest===d,'Cached package integrity check failed.');return p;}
+  async function cached(d){const p=inspectAddon(await bounded(cachePath(d)),key,{installationId,runtime});need(p.digest===d,'Cached package integrity check failed.');remember(p);return p;}
   async function save(next){
     need(Buffer.byteLength(JSON.stringify(next))<=2*1024*1024,'Installer history is full; archive completed work before adding more.');
     const path=join(stateRoot,'state.json'),temp=path+'.'+randomBytes(8).toString('hex')+'.partial';
@@ -95,13 +106,24 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
       request:async(op,input)=>{
         const m=p.manifest;need(permitted(m),'Matching active service license required.');if(committed)need(services.get(m.id)===service&&state.installed[m.id]?.active===p.digest,'Runtime was replaced.');const principal=committed?state.installed[m.id].approval:approval;authorizeRuntime(principal);
         if(op==='https'){need(m.permissions.includes('network.https'),'HTTPS permission was not approved.');need(committed||(input?.method||'POST')==='GET','Mutating provider requests require an active admitted runtime.');return addonHttps(input,m.network,{transport:httpsTransport});}
-        if(op==='workspace.read'){need(m.permissions.includes('workspace.read'),'Workspace read permission was not approved.');return workspaceBridge(op,input,{approval:principal,addonId:m.id});}
+        if(op==='workspace.read'){
+          need(m.permissions.includes('workspace.read'),'Workspace read permission was not approved.');
+          const delegated=m.adminPage?delegation.resolve(op,input,m.id,()=>delegationBinding(m.id,p.digest)):null;
+          return workspaceBridge(op,delegated?.request||input,{approval:principal,addonId:m.id,delegated});
+        }
         if(op==='workspace.write'){
           need(m.permissions.includes('workspace.write'),'Workspace write permission was not approved.');
           const row=state.installed[m.id];need(committed&&row?.active===p.digest,'Workspace writes require a fully active installed runtime.');
           const guarded=m.permissions.some(v=>v.startsWith('route:'));
           need(!guarded||guardHandle.test(input?.authorization??''),'A live service authorization is required for this proposal.');
-          const proposal=await propose(m.id,input,guarded);
+          let scopedProposal;
+          if(m.adminPage){
+            const {authorization,...operation}=input||{};
+            const granted=delegation.resolve(op,operation,m.id,()=>delegationBinding(m.id,p.digest));
+            const {clientId,companyId,operation:name}=operation;
+            scopedProposal={path:granted.request.path,body:operation.arguments,scope:{grantId:granted.grantId,clientId,companyId,operation:name},...(guarded?{authorization}:{})};
+          }
+          const proposal=await propose(m.id,scopedProposal||input,guarded,!!m.adminPage);
           if(row.writeMode==='automatic'){need(m.permissions.includes('workspace.write.auto'),'Automatic writes are not licensed.');return approveWrite({id:m.id,proposalId:proposal.id,digest:proposal.digest,confirm:true},()=>state.installed[m.id].approval,true);}
           return {proposalId:proposal.id,status:'pending-owner-approval'};
         }
@@ -109,9 +131,20 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
       }});
     const original=service;service={...original,manifest:p.manifest,digest:p.digest,approval,health:()=>original.health(),invoke:value=>original.invoke(value),close:()=>original.close(),commit(){committed=true;}};return service;
   }
-  async function exclusive(fn){need(!closed&&!problem,'Add-on installer unavailable: '+(problem||'closed'));need(!busy,'Another add-on operation is in progress.');busy=true;const work=(async()=>{try{return await fn();}finally{busy=false;}})();inFlight=work.catch(()=>{});return work;}
+  async function exclusive(fn,healthCheck=false){
+    // A routine health poll may finish before an owner operation takes the lock.
+    // Competing mutations still require their own fresh approval and receipt.
+    if(busy==='health')await inFlight;
+    need(!closed&&!problem,'Add-on installer unavailable: '+(problem||'closed'));
+    need(!busy,'Another add-on operation is in progress.');
+    busy=healthCheck?'health':'mutation';
+    const work=(async()=>{try{return await fn();}finally{busy=false;}})();
+    inFlight=work.catch(()=>{});
+    return work;
+  }
   async function recover(id,reason){
     const row=state.installed[id];if(!row)return;const running=services.get(id);services.delete(id);await running?.close();
+    delegation?.revoke(id);
     const next=copyState(),target=next.installed[id];target.reason=reason;target.status='unavailable';
     let replacement;
     if(row.previous){try{const p=await cached(row.previous.digest);need(permitted(p.manifest),'Last working revision is not licensed.');replacement=await start(p,row.previous.settings,row.approval);target.active=row.previous.digest;target.settings=row.previous.settings;target.previous=null;target.writeMode='review';for(const proposal of target.proposals)if(proposal.status==='pending'){proposal.status='failed';proposal.reason='Runtime rolled back; request new work.';}target.status='rolled-back';target.reason=reason+' Restored last working revision.';}catch{target.reason=reason+' Last working service could not be restored.';}}
@@ -121,14 +154,14 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
     if(problem||closed||busy)return;
     await exclusive(async()=>{
       for(const [id,row] of Object.entries(state.installed)){
-        try{const p=await cached(row.active);if(!permitted(p.manifest)){await services.get(id)?.close();services.delete(id);continue;}authorizeRuntime(row.approval);
+        try{const p=await cached(row.active);if(!permitted(p.manifest)){delegation?.revoke(id);await services.get(id)?.close();services.delete(id);continue;}authorizeRuntime(row.approval);
           if(p.manifest.type==='service'){
             const running=services.get(id);
             if(running){try{await running.health();}catch{await recover(id,'Service health check failed.');}}
           }
-        }catch{await services.get(id)?.close();services.delete(id);}
+        }catch{delegation?.revoke(id);await services.get(id)?.close();services.delete(id);}
       }
-    });
+    },true);
   }
   try{
     if(!publisherKey||!activationDirectory||!installationId)problem='Trusted publisher and installation provisioning required.';
@@ -143,13 +176,21 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
       const st=await lstat(stateRoot);need(st.isDirectory()&&!st.isSymbolicLink()&&(await realpath(stateRoot))===resolve(stateRoot),'Unsafe installer state directory.');
       if(process.platform==='win32')await protectWindows(stateRoot,keyPath,fresh);else need((st.mode&0o077)===0&&(await lstat(keyPath)).mode%8<2,'Protect installer state and publisher verifier.');
       lock=await open(join(stateRoot,'runtime.lock'),'wx',0o600);
-      try{state=JSON.parse((await bounded(join(stateRoot,'state.json'),2*1024*1024)).toString('utf8'));need(exact(state,['format','installed'])&&state.format===1&&state.installed&&typeof state.installed==='object'&&!Array.isArray(state.installed)&&Object.keys(state.installed).length<=16,'Invalid installer state.');}catch(e){if(e.code!=='ENOENT')throw e;}
+      try{state=JSON.parse((await bounded(join(stateRoot,'state.json'),2*1024*1024)).toString('utf8'));need(exact(state,['format','installed',...(Object.hasOwn(state,'removed')?['removed']:[])])&&state.format===1&&state.installed&&typeof state.installed==='object'&&!Array.isArray(state.installed)&&Object.keys(state.installed).length<=16,'Invalid installer state.');}catch(e){if(e.code!=='ENOENT')throw e;}
+      if(Object.hasOwn(state,'removed')){
+        need(state.removed&&typeof state.removed==='object'&&!Array.isArray(state.removed),'Invalid removed package history.');
+        for(const [id,item] of Object.entries(state.removed)){
+          need(!Object.hasOwn(state.installed,id)&&idPattern.test(id)&&exact(item,['highDigest','highRevision'])&&hex.test(item.highDigest),'Invalid removed package entry.');
+          const pkg=await cached(item.highDigest);
+          need(pkg.manifest.id===id&&pkg.manifest.revision===item.highRevision,'Invalid removed package revision.');
+        }
+      }
       for(const [id,row] of Object.entries(state.installed)){
         need(idPattern.test(id)&&exact(row,['active','highRevision','highDigest','settings','pending','previous','status','reason','approval','writeMode','proposals'])&&hex.test(row.active)&&Number.isSafeInteger(row.highRevision)&&row.highRevision>0&&hex.test(row.highDigest)&&['active','rolled-back','unavailable'].includes(row.status)&&typeof row.reason==='string'&&row.reason.length<=256&&exact(row.approval,['id','authVersion'])&&typeof row.approval.id==='string'&&Number.isSafeInteger(row.approval.authVersion)&&['review','automatic'].includes(row.writeMode)&&Array.isArray(row.proposals)&&row.proposals.length<=8,'Invalid installed add-on history.');
         const p=await cached(row.active);need(p.manifest.id===id&&p.manifest.revision<=row.highRevision,'Installed add-on history mismatch.');validateAddonSettings(p.manifest.settings,row.settings);
         const high=await cached(row.highDigest);need(high.manifest.id===id&&high.manifest.type===p.manifest.type&&high.manifest.revision===row.highRevision,'Invalid revision high-water history.');
         for(const item of [row.pending,row.previous])if(item){need(exact(item,['digest','settings'])&&hex.test(item.digest),'Invalid pending or rollback history.');const q=await cached(item.digest);need(q.manifest.id===id&&q.manifest.type===p.manifest.type&&q.manifest.revision<=row.highRevision,'Invalid pending or rollback target.');validateAddonSettings(q.manifest.settings,item.settings);}
-        for(const proposal of row.proposals){need(exact(proposal,['id','runtime','path','body','digest','status','reason',...(Object.hasOwn(proposal,'authorization')?['authorization']:[])])&&(!Object.hasOwn(proposal,'authorization')||typeof proposal.authorization==='string'&&guardHandle.test(proposal.authorization))&&hex.test(proposal.id)&&hex.test(proposal.runtime)&&hex.test(proposal.digest)&&['pending','executing','complete','failed'].includes(proposal.status)&&proposalHash(id,proposal)===proposal.digest,'Invalid workspace write history.');}
+        for(const proposal of row.proposals){need(exact(proposal,['id','runtime','path','body','digest','status','reason',...(Object.hasOwn(proposal,'authorization')?['authorization']:[]),...(Object.hasOwn(proposal,'scope')?['scope']:[])])&&(!Object.hasOwn(proposal,'scope')||exact(proposal.scope,['grantId','clientId','companyId','operation']))&&(!Object.hasOwn(proposal,'authorization')||typeof proposal.authorization==='string'&&guardHandle.test(proposal.authorization))&&hex.test(proposal.id)&&hex.test(proposal.runtime)&&hex.test(proposal.digest)&&['pending','executing','complete','failed'].includes(proposal.status)&&proposalHash(id,proposal)===proposal.digest,'Invalid workspace write history.');}
       }
       timer=setInterval(()=>refresh().catch(()=>{}),monitorMs);timer.unref();
     }
@@ -180,13 +221,28 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
       return (await invoke({id,value},check,service)).value;
     };
   }
+  function delegationBinding(id,expectedDigest){
+    const service=activeSurface(id,'workspace.read')||activeSurface(id,'workspace.write');
+    if(!service?.manifest.adminPage||expectedDigest&&service.digest!==expectedDigest)fail('Active licensed delegated service required.',403);
+    return {digest:service.digest,ownerId:service.approval.id,ownerVersion:service.approval.authVersion,permissions:service.manifest.permissions};
+  }
   function route(path,hostname) {
     for(const [id,service] of services) {
+      if(service.manifest.adminPage&&isExternalRoute(path))continue;
       if(hostname!==undefined&&service.endpointOrigin!=='https://'+hostname)continue;
       const dispatch=surface(id,'route:'+path);
       if(dispatch) return dispatch;
     }
     return null;
+  }
+  function listenerService(id,owner) {
+    const service=activeSurface(id,'service.controls');
+    if(!service?.manifest.adminPage||!service.manifest.permissions.some(p=>p.startsWith('route:')&&isExternalRoute(p.slice(6))))return null;
+    if(owner&&(owner.id!==service.approval.id||owner.authVersion!==service.approval.authVersion))return null;
+    return service;
+  }
+  function listenerRoute(id,path,service) {
+    return isExternalRoute(path)&&listenerService(id)===service?surface(id,'route:'+path):null;
   }
   async function controls(input,origin,currentOwner) {
     const {id,action,values}=input;
@@ -195,7 +251,7 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
       fail('Invalid owner control request.',400);
     const dispatch=surface(id,'service.controls');
     if(!dispatch) fail('Endpoint unavailable.',404);
-    const result=await dispatch({channel:'owner',action,values,origin},currentOwner);
+    const result=await dispatch({channel:'owner',action,values,origin,...(listenerService(id)?{endpointOrigin:origin}:{})},currentOwner);
     if(result&&Object.hasOwn(result,'endpointOrigin')) {
       const service=activeSurface(id,'service.controls');
       if(!service) fail('Endpoint unavailable.',404);
@@ -209,7 +265,7 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
   }
   async function status(){
     await refresh();const installed=[];
-    if(!problem)for(const [id,row] of Object.entries(state.installed)){try{const p=(await cached(row.active)).manifest;const eligible=permitted(p),stopped=p.type==='service'&&!services.has(id);installed.push({id,name:p.name,revision:p.revision,type:p.type,status:!eligible?'license-required':stopped?'unavailable':row.status,reason:!eligible?'Matching active license required.':row.reason||(stopped?'Service stopped. Review and Apply its accepted package to request an owner-approved start.':''),runtimeIsolation:isolationView(id),...(activeSurface(id,'service.controls')?{controls:true}:{}),permissions:p.permissions,network:p.network,writeMode:row.writeMode,writeProposals:eligible?row.proposals.map(({authorization,...proposal})=>proposal):[],settingsSchema:eligible?p.settings:[],settings:eligible?row.settings:{},pendingRestart:eligible&&!!row.pending});}catch{installed.push({id,status:'unavailable',reason:'Accepted package could not be verified.',settingsSchema:[],settings:{}});}}
+    if(!problem)for(const [id,row] of Object.entries(state.installed)){try{const p=(await cached(row.active)).manifest;const eligible=permitted(p),stopped=p.type==='service'&&!services.has(id);installed.push({id,name:p.name,...(eligible?{pageLabel:p.adminPage||p.name,...(p.adminPage?{adminPage:p.adminPage}:{})}:{}),revision:p.revision,type:p.type,status:!eligible?'license-required':stopped?'unavailable':row.status,reason:!eligible?'Matching active license required.':row.reason||(stopped?'Service stopped. Review and Apply its accepted package to request an owner-approved start.':''),runtimeIsolation:isolationView(id),...(activeSurface(id,'service.controls')?{controls:true}:{}),permissions:p.permissions,network:p.network,writeMode:row.writeMode,writeProposals:eligible?row.proposals.map(({authorization,...proposal})=>proposal.status==='pending'&&!proposalGrantCurrent(id,proposal)?{...proposal,status:'failed',reason:'Delegation changed. Request new work.'}:proposal):[],settingsSchema:eligible?p.settings:[],settings:eligible?row.settings:{},pendingRestart:eligible&&!!row.pending});}catch{installed.push({id,status:'unavailable',reason:'Accepted package could not be verified.',settingsSchema:[],settings:{}});}}
     return {configured:!problem,installationId,reason:problem,installed};
   }
   async function review(){
@@ -218,7 +274,7 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
     need(names.length<=512,'Too many package folder entries.');const ids=new Set();
     for(const name of names.sort().filter(n=>n.toLowerCase().endsWith('.fqaddon'))){
       try{need(/^[A-Za-z0-9_.-]{1,100}\.fqaddon$/.test(name)&&candidates.length<16,'Invalid add-on filename or count.');const p=inspectAddon(await bounded(join(directory,name)),key,{installationId,runtime}),m=p.manifest;
-        need(!ids.has(m.id),'Duplicate add-on ID in folder.');ids.add(m.id);const row=state.installed[m.id];if(row)need((await cached(row.active)).manifest.type===m.type,'Add-on type cannot change for an installed ID.');const obsolete=row&&(m.revision<row.highRevision||m.revision===row.highRevision&&p.digest!==row.highDigest);
+        need(!ids.has(m.id),'Duplicate add-on ID in folder.');ids.add(m.id);const row=state.installed[m.id];if(row)need((await cached(row.active)).manifest.type===m.type,'Add-on type cannot change for an installed ID.');const history=row||state.removed?.[m.id];const obsolete=history&&(m.revision<history.highRevision||m.revision===history.highRevision&&p.digest!==history.highDigest);
         const eligible=!obsolete&&permitted(m);const reason=obsolete?'Older or conflicting revision.':!permitted(m)?'Matching active license required.':row?.active===p.digest?'Already active.':'Ready for owner review.';
         const c={id:m.id,name:m.name,revision:m.revision,type:m.type,permissions:m.permissions,network:m.network,eligible,reason,restartRequired:!!row&&m.type==='service'&&row.active!==p.digest,digest:p.digest};candidates.push(c);packages.set(m.id,p);
       }catch(e){errors.push({file:name,reason:e.message});}
@@ -229,9 +285,10 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
     return {receipt,candidates,errors,packages};
   }
   async function apply({id,receipt,confirm},authorize){return exclusive(async()=>{
-    need(confirm===true&&typeof authorize==='function','Explicit owner approval required.');authorize();const r=await review();need(receipt===r.receipt,'Review changed; review the folder again.');const p=r.packages.get(id);need(p&&r.candidates.find(c=>c.id===id)?.eligible,'Package is not eligible.');const m=p.manifest;authorize();need(permitted(m),'License changed.');
+    need(confirm===true&&typeof authorize==='function','Explicit owner approval required.');authorize();const r=await review();need(receipt===r.receipt,'Review changed; review the folder again.');const p=r.packages.get(id);need(p&&r.candidates.find(c=>c.id===id)?.eligible,'Package is not eligible.');const m=p.manifest;remember(p);authorize();need(permitted(m),'License changed.');
     const cache=cachePath(p.digest);try{const f=await open(cache,'wx',0o600);try{await f.writeFile(p.bytes);await f.sync();}finally{await f.close();}}catch(e){if(e.code!=='EEXIST')throw e;await cached(p.digest);}
     const next=copyState(),prior=next.installed[id],settings=settingsFor(m,prior?.settings);need(prior||Object.keys(next.installed).length<16,'Installed add-on limit reached.');
+    if(next.removed)delete next.removed[id];
     if(prior?.active===p.digest){if(m.type==='service'&&!services.has(id)){prior.pending={digest:p.digest,settings:prior.settings};prior.reason='Owner restart approval required.';authorize();need(permitted(m),'License changed.');await save(next);}return status();}
     if(prior&&m.type==='service'){
       prior.pending={digest:p.digest,settings};prior.highRevision=m.revision;prior.highDigest=p.digest;prior.reason='Owner restart approval required.';authorize();need(permitted(m),'License changed.');await save(next);
@@ -245,6 +302,7 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
     need(confirm===true&&typeof authorize==='function','Explicit owner restart approval required.');authorize();const row=state.installed[id];need(row?.pending,'No approved service change is pending.');const p=await cached(row.pending.digest);need(p.manifest.id===id&&p.manifest.type==='service'&&permitted(p.manifest),'Pending service is not licensed or supported.');const next=copyState(),target=next.installed[id];let candidate;
     validateAddonSettings(p.manifest.settings,row.pending.settings);
     const owner=authorize(),approval={id:owner.id,authVersion:owner.authVersion};
+    if(row.active!==p.digest||row.approval.id!==owner.id||row.approval.authVersion!==owner.authVersion)delegation?.revoke(id);
     const old=services.get(id);await old?.close();services.delete(id);
     try{candidate=await start(p,row.pending.settings,approval,{digest:row.active,settings:row.settings});}
     catch(e){target.pending=null;target.status='rolled-back';target.reason='Update failed its start or health check; retained last working revision. '+String(e.message).slice(0,120);target.approval=approval;if(JSON.stringify(row.approval)!==JSON.stringify(approval))target.writeMode='review';authorize();need(permitted(p.manifest),'License changed.');await save(next);try{const previous=await cached(row.active);if(permitted(previous.manifest)){const restored=await start(previous,row.settings,approval);restored.commit();services.set(id,restored);}}catch{}return status();}
@@ -264,45 +322,74 @@ export async function createAddonInstaller({directory=join(app,'packages'),publi
     authorize();need(permitted(p.manifest),'License changed.');return {value:result};
   }
   async function writeAuthorizationActive(id,proposal) {
+    if(!proposalGrantCurrent(id,proposal))return false;
     if(!proposal.authorization)return true;
     const running=services.get(id);
     return !!running&&running.digest===proposal.runtime&&
       await running.invoke({channel:'authorize-write',authorization:proposal.authorization})===true&&
       services.get(id)===running;
   }
-  async function propose(id,input,guarded){return exclusive(async()=>{
-    need(exact(input,['path','body',...(guarded?['authorization']:[])])&&typeof input.path==='string'&&input.path.startsWith('/api/')&&input.path.length<=240&&Buffer.byteLength(JSON.stringify(input))<=128*1024,'Invalid workspace write proposal.');
+  function proposalGrantCurrent(id,proposal) {
+    if(!proposal.scope)return true;
+    try{return delegation.isCurrent(id,delegationBinding(id,proposal.runtime),proposal.scope.grantId);}
+    catch{return false;}
+  }
+  async function propose(id,input,guarded,scoped){return exclusive(async()=>{
+    need(exact(input,['path','body',...(guarded?['authorization']:[]),...(scoped?['scope']:[])])&&typeof input.path==='string'&&input.path.startsWith('/api/')&&input.path.length<=240&&Buffer.byteLength(JSON.stringify(input))<=128*1024,'Invalid workspace write proposal.');
     const next=copyState(),row=next.installed[id];need(row,'Runtime is not active.');
-    row.proposals=row.proposals.filter(p=>['pending','executing'].includes(p.status));
+    row.proposals=row.proposals.filter(p=>p.status==='executing'||p.status==='pending'&&proposalGrantCurrent(id,p));
     if(row.proposals.length===8){
       const retained=[];
       for(const p of row.proposals)if(p.status==='executing'||await writeAuthorizationActive(id,p))retained.push(p);
       row.proposals=retained;
     }
     need(row.proposals.length<8,'Too many pending writes.');
-    const proposal={id:randomBytes(32).toString('hex'),runtime:row.active,path:input.path,body:input.body,status:'pending',reason:'',...(guarded?{authorization:input.authorization}:{})};
+    const proposal={id:randomBytes(32).toString('hex'),runtime:row.active,path:input.path,body:input.body,status:'pending',reason:'',...(guarded?{authorization:input.authorization}:{}),...(scoped?{scope:input.scope}:{})};
     proposal.digest=proposalHash(id,proposal);row.proposals.push(proposal);await save(next);return proposal;
   });}
   async function approveWrite({id,proposalId,digest:confirmed,confirm},authorize,automatic=false){return exclusive(async()=>{
     need(confirm===true,'Explicit workspace write approval required.');const owner=authorize(),row=state.installed[id];need(row,'Add-on is not installed.');const pkg=(await cached(row.active)).manifest;need(permitted(pkg)&&pkg.permissions.includes('workspace.write'),'Workspace writes are not licensed.');if(automatic)need(row.writeMode==='automatic'&&pkg.permissions.includes('workspace.write.auto'),'Automatic writes were not owner-approved.');const found=row.proposals.find(p=>p.id===proposalId);need(found?.status==='pending'&&found.runtime===row.active&&found.digest===confirmed&&proposalHash(id,found)===confirmed,'Write proposal is stale or already attempted.');
+    const checkedDelegation=()=>{
+      if(!pkg.adminPage)return null;
+      const binding=()=>delegationBinding(id,found.runtime);
+      const {grantId,...operation}=found.scope||{};
+      need(grantId&&owner.id===binding().ownerId,'The original owner and delegated grant are required.');
+      return delegation.resolve('workspace.write',{...operation,arguments:found.body},id,binding,grantId);
+    };
     const validate=async()=>{
       const currentOwner=authorize();
       need(currentOwner.id===owner.id&&currentOwner.authVersion===owner.authVersion&&permitted(pkg),'Approval or license changed.');
       need(await writeAuthorizationActive(id,found),'The originating service authorization is no longer active.');
+      return checkedDelegation();
     };
     await validate();
     let next=copyState(),proposal=next.installed[id].proposals.find(p=>p.id===proposalId);proposal.status='executing';proposal.reason='Outcome must be reconciled if the host is interrupted.';await save(next);
-    try{await validate();const result=await workspaceBridge('workspace.write',{path:found.path,body:found.body},{approval:{id:owner.id,authVersion:owner.authVersion},addonId:id});next=copyState();proposal=next.installed[id].proposals.find(p=>p.id===proposalId);proposal.status='complete';proposal.reason='Workspace API completed; recorded in the audit trail.';await save(next);return automatic?{proposalId:found.id,status:'complete',result}:status();}
+    try{const delegated=await validate();delegated?.recordAttempt(found.id);const result=await workspaceBridge('workspace.write',delegated?.request||{path:found.path,body:found.body},{approval:{id:owner.id,authVersion:owner.authVersion},addonId:id,delegated});next=copyState();proposal=next.installed[id].proposals.find(p=>p.id===proposalId);proposal.status='complete';proposal.reason='Workspace API completed; recorded in the audit trail.';await save(next);return automatic?{proposalId:found.id,status:'complete',result}:status();}
     catch(e){next=copyState();proposal=next.installed[id].proposals.find(p=>p.id===proposalId);proposal.status='failed';proposal.reason='Workspace API did not complete successfully; review its audit trail before retrying.';await save(next);throw e;}
   });}
   async function writePolicy({id,autoApproveWrites,confirm},authorize){return exclusive(async()=>{
     need(confirm===true&&typeof autoApproveWrites==='boolean','Explicit owner write policy approval required.');const owner=authorize(),row=state.installed[id];need(row,'Add-on is not installed.');const p=(await cached(row.active)).manifest;need(permitted(p)&&p.permissions.includes('workspace.write')&&(!autoApproveWrites||p.permissions.includes('workspace.write.auto')),'Requested write policy is not licensed.');const next=copyState(),approval={id:owner.id,authVersion:owner.authVersion};if(JSON.stringify(row.approval)!==JSON.stringify(approval))for(const proposal of next.installed[id].proposals)if(proposal.status==='pending'){proposal.status='failed';proposal.reason='Approving owner changed; request new work.';}next.installed[id].writeMode=autoApproveWrites?'automatic':'review';next.installed[id].approval=approval;authorize();await save(next);
     if((approval.id!==row.approval.id||approval.authVersion!==row.approval.authVersion)&&p.permissions.some(v=>v.startsWith('route:')||v==='service.controls')){
+      delegation?.revoke(id);
       const service=services.get(id);services.delete(id);await service?.close();
     }
     return status();
   });}
   async function restore(){if(problem||closed)return status();return exclusive(async()=>{for(const [id,row] of Object.entries(state.installed)){try{const p=await cached(row.active);if(permitted(p.manifest)&&p.manifest.type==='service'&&!services.has(id)){const service=await start(p,row.settings,row.approval);service.commit();services.set(id,service);}}catch(e){await recover(id,'Service failed to start after host restart.');}}return status();});}
-  return {status,route,controls,review:async()=>{const {packages,...r}=await review();return r;},apply,restart,settings,invoke,refresh,restore,approveWrite,writePolicy,
+  async function remove({id,confirm},authorize,beforeRemove){return exclusive(async()=>{
+    need(confirm===true,'Confirm removal of this installed add-on.');
+    need(typeof id==='string'&&Object.hasOwn(state.installed,id),'Add-on is not installed.');
+    const row=state.installed[id];
+    const next=copyState();
+    delete next.installed[id];
+    next.removed??={};
+    next.removed[id]={highRevision:row.highRevision,highDigest:row.highDigest};
+    authorize();
+    beforeRemove?.(id);
+    await save(next);
+    const service=services.get(id);services.delete(id);await service?.close();
+    return status();
+  });}
+  return {status,adminPages,listenerRoute,listenerService,remove,route,controls,delegationBinding,review:async()=>{const {packages,...r}=await review();return r;},apply,restart,settings,invoke,refresh,restore,approveWrite,writePolicy,
     async close(){closed=true;clearInterval(timer);await inFlight;for(const svc of services.values())await svc.close();services.clear();if(lock){await lock.close();lock=null;await unlink(join(stateRoot,'runtime.lock')).catch(()=>{});}}};
 }
