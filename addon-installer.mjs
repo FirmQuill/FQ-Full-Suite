@@ -32,10 +32,13 @@ export function inspectAddon(bytes,key,{installationId,runtime='0.6.5'}={}){
   need(signature.length===64&&verify(null,signed,key,signature),'Publisher signature did not verify.');
   let p;try{p=JSON.parse(new TextDecoder('utf-8',{fatal:true}).decode(signed));}catch{fail('Invalid signed manifest.');}
   const pageFields=p&&Object.hasOwn(p,'adminPage')?['adminPage']:[];
-  need(exact(p,['format','id','name','revision','installationId','compatibility','type','permissions','settings','files','network',...pageFields])&&p.format==='firmquill.addon.v1','Unsupported add-on format.');
+  const installationBound=p&&Object.hasOwn(p,'installationId');
+  const fields=['format','id','name','revision','compatibility','type','permissions','settings','files','network',...pageFields];
+  if(installationBound)fields.push('installationId');
+  need(exact(p,fields)&&p.format==='firmquill.addon.v1','Unsupported add-on format.');
   need(!pageFields.length||(typeof p.adminPage==='string'&&p.adminPage.trim()===p.adminPage&&p.adminPage.length>=1&&p.adminPage.length<=64&&!/[\x00-\x1f\x7f]/.test(p.adminPage)),'Invalid Administration page label.');
   need(typeof p.id==='string'&&idPattern.test(p.id)&&typeof p.name==='string'&&p.name.length>0&&p.name.length<=80&&Number.isSafeInteger(p.revision)&&p.revision>0,'Invalid add-on identity or revision.');
-  need(p.installationId===installationId&&hex.test(installationId),'Add-on belongs to another installation.');
+  if(installationBound)need(p.installationId===installationId&&hex.test(installationId),'Add-on belongs to another installation.');
   need(exact(p.compatibility,['min','max','hostApi'])&&p.compatibility.hostApi===1,'Unsupported service interface.');
   const minimum=version(p.compatibility.min),maximum=version(p.compatibility.max),current=version(runtime);
   need(compare(minimum,maximum)<=0&&compare(minimum,current)<=0&&compare(current,maximum)<=0,'Add-on is incompatible with this ERP version.');

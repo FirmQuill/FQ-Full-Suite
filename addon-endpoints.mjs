@@ -4,6 +4,8 @@ const basePermissions = new Set(['settings', 'service.runtime', 'service.control
   'workspace.read', 'workspace.write', 'workspace.write.auto']);
 const hostPrefixes = new Set(['api', 'audit', 'kiosk', 'legal', 'shared', 'setup', 'worker', 'main']);
 const installerPaths = new Set(['review', 'apply', 'restart', 'settings', 'invoke', 'controls', 'write-policy', 'approve-write','listener','delegation','remove']);
+// The main and worker portals use the __Host- prefix for HTTPS sessions.
+const portalSessionCookie = /(?:^|;)[ \t]*(?:__Host-)?fq_(?:main|worker)[ \t]*=/;
 
 export function isOwnerRoute(path) {
   const match = /^\/api\/addons\/([a-z][a-z0-9-]{0,63})$/.exec(path);
@@ -40,7 +42,7 @@ function requireValue(condition, status, message) {
 
 export async function forwardAddonRequest(req, res, dispatch) {
   requireValue(['GET', 'POST'].includes(req.method), 405, 'Method unavailable.');
-  requireValue(!req.headers.cookie, 403, 'Use the separate client connection without portal cookies.');
+  requireValue(!portalSessionCookie.test(req.headers.cookie ?? ''), 403, 'Use the separate client connection without portal cookies.');
   requireValue(req.url.length <= 8192, 414, 'Request URL too long.');
   const headers = {};
   for (const [name, value] of Object.entries(req.headers)) {

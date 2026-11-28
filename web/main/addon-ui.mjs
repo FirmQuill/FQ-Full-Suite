@@ -152,7 +152,7 @@ export function addonPanel(data){
   const installed=Array.isArray(data.installed)?data.installed:[];
   return '<section class="panel" data-addons data-addon-configured="'+configured+'"><div class="panelhead"><h2>Signed add-ons</h2><button type="button" data-addon-action="review"'+(!configured?' disabled':'')+'>Review add-on folder</button></div>'+
     (data.installationId?'<p>Installation ID (share only with your issuer): <code>'+esc(data.installationId)+'</code></p>':'')+
-    (!configured?'<p>The host administrator must configure the trusted publisher and protected add-on installation directory.</p>':'<p>Place a signed, installation-bound add-on in the package folder, then review its permissions and explicitly Apply it here.</p>')+
+    (!configured?'<p>The host administrator must configure the trusted publisher and protected add-on installation directory.</p>':'<p>Place the signed add-on in the package folder and upload its license for this Installation ID. Review its permissions before choosing Apply add-on.</p>')+
     (data.reason||data.error?'<p>'+esc(data.reason||data.error)+'</p>':'')+
     '<p data-addon-message role="status" aria-live="polite"></p>'+
     (installed.length?installed.map(addon=>installedMarkup(addon)).join(''):'<p>No add-ons installed.</p>')+

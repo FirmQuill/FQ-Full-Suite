@@ -214,8 +214,11 @@ Hosts already configured with an external verifier or installation directory
 continue to use that configuration.
 
 1. Sign in as the owner, accept the Terms and open **Packages → Signed add-ons**.
-   Copy the installation ID and give it to the issuer for a matching signed
-   add-on and license. The license must cover the package ID, revision and permissions.
+   Give the issuer your Installation ID for a signed license covering the
+   add-on's package ID, revision and permissions. The publisher signs each
+   new add-on revision once. Every licensed installation uses the same
+   `.fqaddon` file. Older add-ons with a signed Installation ID still require
+   that installation and its matching license.
 2. Place the signed `.fqaddon` in the extracted application's `packages\`
    folder. In **Packages**, choose **Upload signed license** and select
    the matching `.fqlicense`.
